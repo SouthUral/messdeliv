@@ -38,8 +38,8 @@ type Postgres struct {
 func (pg *Postgres) pgEnv() {
 	pg.Host = getEnvStr("ASD_POSTGRES_HOST", "localhost")
 	pg.Port = getEnvStr("ASD_POSTGRES_PORT", "5432")
-	pg.User = getEnvStr("ASD_POSTGRES_USER", "postgres")
-	pg.Password = getEnvStr("ASD_POSTGRES_PASSWORD", "postgres")
+	pg.User = getEnvStr("SERVICE_PG_ILOGIC_USERNAME", "")
+	pg.Password = getEnvStr("SERVICE_PG_ILOGIC_PASSWORD", "")
 	pg.DataBaseName = getEnvStr("ASD_POSTGRES_DBNAME", "postgres")
 	pg.isReadyConn = false
 }
@@ -93,10 +93,10 @@ func (rabbit *Rabbit) rabbitEnv() {
 	rabbit.Host = getEnvStr("ASD_RMQ_HOST", "localhost")
 	rabbit.Port = getEnvStr("ASD_RMQ_PORT", "5672")
 	rabbit.VHost = getEnvStr("ASD_RMQ_VHOST", "")
-	rabbit.User = getEnvStr("SEVICE_RMQ_ENOTIFY_USERNAME", "")
-	rabbit.Password = getEnvStr("SEVICE_RMQ_ENOTIFY_PASSWORD", "")
+	rabbit.User = getEnvStr("SERVICE_RMQ_ENOTIFY_USERNAME", "")
+	rabbit.Password = getEnvStr("SERVICE_RMQ_ENOTIFY_PASSWORD", "")
 	rabbit.Heartbeat = getEnvInt("ASD_RMQ_HEARTBEAT", 1)
-	rabbit.NameQueue = getEnvStr("ASD_RMQ_NAME_QUEUE", "")
+	rabbit.NameQueue = getEnvStr("SERVICE_RMQ_QUEUE", "")
 }
 
 func getEnvStr(key, defaultVal string) string {
