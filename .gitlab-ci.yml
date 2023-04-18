@@ -4,7 +4,7 @@ variables:
   # CONFIG_COMMAND: cp  config.toml.template config.toml
   HELM_PROJECT_NAME: go-service
   KUBER_SERVICE_COMMAND: --set polyna.command={messdeliv}
-  KUBER_SERVICE_NAME: messDeliv
+  KUBER_SERVICE_NAME: messages-deliv
   KUBER_SERVICE_INFO: --set resources.limits.memory=200Mi --set polyna.group="service"
   KUBER_CONFIGMAPS: --set polyna.envFrom.configMapRefs={pg-env,rmq-env,tz-env}
   KUBER_ENV: --set polyna.env.SERVICE_RMQ_QUEUE=iLogic.Messages
