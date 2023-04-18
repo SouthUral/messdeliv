@@ -3,7 +3,7 @@ variables:
   # SERVICE_NAME: asd-trips
   # CONFIG_COMMAND: cp  config.toml.template config.toml
   HELM_PROJECT_NAME: go-service
-  KUBER_SERVICE_COMMAND: --set polyna.command={messdeliv}
+  KUBER_SERVICE_COMMAND: --set polyna.command={./messdeliv}
   KUBER_SERVICE_NAME: messages-deliv
   KUBER_SERVICE_INFO: --set resources.limits.memory=200Mi --set polyna.group="service"
   KUBER_CONFIGMAPS: --set polyna.envFrom.configMapRefs={pg-env,rmq-env,tz-env}
