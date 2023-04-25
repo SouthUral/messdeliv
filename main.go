@@ -26,13 +26,14 @@ type Rabbit struct {
 }
 
 type Postgres struct {
-	Host         string
-	Port         string
-	User         string
-	Password     string
-	DataBaseName string
-	Conn         *pgx.Conn
-	isReadyConn  bool
+	Host               string
+	Port               string
+	User               string
+	Password           string
+	DataBaseName       string
+	RecordingProcedure string
+	Conn               *pgx.Conn
+	isReadyConn        bool
 }
 
 func (pg *Postgres) pgEnv() {
@@ -41,6 +42,7 @@ func (pg *Postgres) pgEnv() {
 	pg.User = getEnvStr("SERVICE_PG_ILOGIC_USERNAME", "")
 	pg.Password = getEnvStr("SERVICE_PG_ILOGIC_PASSWORD", "")
 	pg.DataBaseName = getEnvStr("ASD_POSTGRES_DBNAME", "postgres")
+	pg.RecordingProcedure = getEnvStr("SERVICE_PG_PROCEDURE", "call device.check_section($1, $2)")
 	pg.isReadyConn = false
 }
 
@@ -69,7 +71,7 @@ func (pg *Postgres) connPgloop() {
 }
 
 func (pg *Postgres) requestDb(msg []byte, offset_msg int64) error {
-	_, err := pg.Conn.Exec(context.Background(), "call device.set_messages($1, $2)", msg, offset_msg)
+	_, err := pg.Conn.Exec(context.Background(), pg.RecordingProcedure, msg, offset_msg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "QueryRow failed: %v\n", err)
 		return err
@@ -80,7 +82,7 @@ func (pg *Postgres) requestDb(msg []byte, offset_msg int64) error {
 func (pg *Postgres) getOffset() int {
 	var offset_msg int
 	if pg.isReadyConn {
-		err := pg.Conn.QueryRow(context.Background(), "SELECT offset_msg FROM device.messages ORDER BY created_at DESC LIMIT 1;").Scan(&offset_msg)
+		err := pg.Conn.QueryRow(context.Background(), "SELECT device.get_offset();").Scan(&offset_msg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "QueryRow failed: %v\n", err)
 		}
