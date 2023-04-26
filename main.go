@@ -229,7 +229,6 @@ func worker() {
 		}
 
 	}
-	return
 }
 
 func main() {
