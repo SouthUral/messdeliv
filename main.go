@@ -32,6 +32,7 @@ type Postgres struct {
 	Password           string
 	DataBaseName       string
 	RecordingProcedure string
+	GetOffset          string
 	Conn               *pgx.Conn
 	isReadyConn        bool
 }
@@ -42,7 +43,8 @@ func (pg *Postgres) pgEnv() {
 	pg.User = getEnvStr("SERVICE_PG_ILOGIC_USERNAME", "")
 	pg.Password = getEnvStr("SERVICE_PG_ILOGIC_PASSWORD", "")
 	pg.DataBaseName = getEnvStr("ASD_POSTGRES_DBNAME", "postgres")
-	pg.RecordingProcedure = getEnvStr("SERVICE_PG_PROCEDURE", "call device.check_section($1, $2)")
+	pg.RecordingProcedure = getEnvStr("SERVICE_PG_PROCEDURE", "")
+	pg.GetOffset = getEnvStr("SERVICE_PG_GETOFFSET", "")
 	pg.isReadyConn = false
 }
 
@@ -82,7 +84,7 @@ func (pg *Postgres) requestDb(msg []byte, offset_msg int64) error {
 func (pg *Postgres) getOffset() int {
 	var offset_msg int
 	if pg.isReadyConn {
-		err := pg.Conn.QueryRow(context.Background(), "SELECT device.get_offset();").Scan(&offset_msg)
+		err := pg.Conn.QueryRow(context.Background(), pg.GetOffset).Scan(&offset_msg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "QueryRow failed: %v\n", err)
 		}
