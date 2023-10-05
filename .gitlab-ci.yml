@@ -7,6 +7,7 @@ variables:
   KUBER_SERVICE_NAME: messages-deliv
   KUBER_SERVICE_INFO: --set resources.limits.memory=200Mi --set polyna.group="service"
   KUBER_CONFIGMAPS: --set polyna.envFrom.configMapRefs={pg-env,rmq-env,tz-env,asd-messdeliv}
+  KUBER_ENV: --set affinity={services}
   # KUBER_ENV: --set polyna.env.SERVICE_RMQ_QUEUE=iLogic.Messages --set polyna.env.ASD_POSTGRES_DBNAME=poly_arch #--set polyna.env.SERVICE_PG_PROCEDURE='call device.check_section($1, $2)' # --set polyna.env.SERVICE_PG_GETOFFSET="SELECT device.get_offset()"
   KUBER_SECRETS: --set polyna.envFrom.secretRefs={pg-ilogic,rmq-enotify}
 
