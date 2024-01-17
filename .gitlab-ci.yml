@@ -1,17 +1,46 @@
-variables:
-  PROJECT_FOLDER: polyna/services/messdeliv
+# variables:
+  # PROJECT_FOLDER: polyna/services/messdeliv
   # SERVICE_NAME: asd-trips
   # CONFIG_COMMAND: cp  config.toml.template config.toml
-  HELM_PROJECT_NAME: go-service
-  KUBER_SERVICE_COMMAND: --set polyna.command={./messdeliv}
-  KUBER_SERVICE_NAME: messages-deliv
-  KUBER_SERVICE_INFO: --set resources.limits.memory=200Mi --set polyna.group="service"
-  KUBER_CONFIGMAPS: --set polyna.envFrom.configMapRefs={pg-env,rmq-env,tz-env,asd-messdeliv}
-  KUBER_ENV: --set affinity={services}
+  # HELM_PROJECT_NAME: go-service
+  # KUBER_SERVICE_COMMAND: --set polyna.command={./messdeliv}
+  # KUBER_SERVICE_NAME: messages-deliv
+  # KUBER_SERVICE_INFO: --set resources.limits.memory=200Mi --set polyna.group="service"
+  # KUBER_CONFIGMAPS: --set polyna.envFrom.configMapRefs={pg-env,rmq-env,tz-env,asd-messdeliv}
   # KUBER_ENV: --set polyna.env.SERVICE_RMQ_QUEUE=iLogic.Messages --set polyna.env.ASD_POSTGRES_DBNAME=poly_arch #--set polyna.env.SERVICE_PG_PROCEDURE='call device.check_section($1, $2)' # --set polyna.env.SERVICE_PG_GETOFFSET="SELECT device.get_offset()"
-  KUBER_SECRETS: --set polyna.envFrom.secretRefs={pg-ilogic,rmq-enotify}
+  # KUBER_SECRETS: --set polyna.envFrom.secretRefs={pg-ilogic,rmq-enotify}
+
+variables:
+  # KUBER_SERVICE_NAME: ${CI_PROJECT_NAME}
+  KUBER_SERVICE_NAME: messages-deliv
 
 include:
   - project: 'polyna/devops/ci-scripts'
-    ref: kuber-env
-    file: base_template.yml
+    ref: kuber-v3
+    file: template/deploy_kuber.yaml
+  - project: 'polyna/devops/ci-scripts'
+    ref: kuber-v3
+    file: all.yaml
+
+.deploy:
+  extends: .deploy_kuber
+  script:
+    - echo "KUBER_SERVICE_NAME=${KUBER_SERVICE_NAME}"
+    # Разворачивание сервиса в кластере
+    - |
+      helm upgrade ${KUBER_SERVICE_NAME} spbgit/${HELM_PROJECT_NAME} \
+      --debug \
+      --install \
+      --insecure-skip-tls-verify \
+      --kube-token=${GITLAB_AGENT_TOKEN} \
+      --namespace $ASD_NAMESPACE \
+      --set image.repository=$IMAGE_NAME \
+      --set image.tag=${CI_COMMIT_SHORT_SHA} \
+      --set nameOverride=${KUBER_SERVICE_NAME} \
+      --set fullnameOverride=${KUBER_SERVICE_NAME} \
+      --set affinity="{${KUBER_AFFINITY// /,}}" \
+      --set polyna.command='{./messdeliv}' \
+      --set polyna.group=${KUBER_POLYNA_GROUP} \
+      --set polyna.envFrom.configMapRefs='{pg-env,rmq-env,tz-env,asd-messdeliv}' \
+      --set polyna.envFrom.secretRefs='{pg-ilogic,rmq-enotify}' \
+      --version $HELM_CHART_VERSION
