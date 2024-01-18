@@ -67,11 +67,11 @@ func (pg *Postgres) GetOffset() int {
 }
 
 // инициализирует Postgres{}, запускает чтение ENV и подключение к БД
-func InitPg(envs PgEnvs) *Postgres {
+func InitPg(envs envs) *Postgres {
 	pg := &Postgres{
-		url:                envs.getUrl(),
-		recordingProcedure: envs.RecordingProcedure,
-		funcGetOffset:      envs.OffsetFunc,
+		url:                envs.GetUrl(),
+		recordingProcedure: envs.GetRecProcedure(),
+		funcGetOffset:      envs.GetOffsetFunc(),
 	}
 
 	pg.connection()

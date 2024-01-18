@@ -75,10 +75,10 @@ type RabbitConn struct {
 	Channel   *amqp.Channel
 }
 
-func InitRb(envs RbEnvs) *Rabbit {
+func InitRb(envs envs) *Rabbit {
 	rb := &Rabbit{
-		url:       envs.getUrl(),
-		nameQueue: envs.NameQueue,
+		url:       envs.GetUrl(),
+		nameQueue: envs.GetNameQueue(),
 	}
 
 	// rb.StreamOffset = offset

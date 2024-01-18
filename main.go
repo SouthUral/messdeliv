@@ -1,14 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 
 	"github.com/joho/godotenv"
 
+	env "messdelive/env"
 	pg "messdelive/postgres"
 	rb "messdelive/rabbit"
-	ut "messdelive/utils"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -29,53 +28,9 @@ func init() {
 	}
 }
 
-// метод сопоставления и загрузки переменных из map[string]string в соответствующую структуру
-func uploadingStruct[T *pg.PgEnvs | *rb.RbEnvs](envs map[string]string, envType T) error {
-	res, err := json.Marshal(envs)
-	if err != nil {
-		return err
-	}
-
-	err = json.Unmarshal(res, envType)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// загрузка переменных окружения для rabbitMQ и PostrgreSQL
-func loadEnvs() (*pg.PgEnvs, *rb.RbEnvs) {
-	var err error
-
-	envLoader := ut.InitEnvLoader()
-
-	pgEnvs := &pg.PgEnvs{}
-	rbEnvs := &rb.RbEnvs{}
-
-	envPg := envLoader.Load(pgEnvs.GetEnvKeys())
-	envRb := envLoader.Load(rbEnvs.GetEnvKeys())
-
-	if !envLoader.CheckUnloadEnvs() {
-		log.Fatal("not all environment variables are loaded")
-	}
-
-	err = uploadingStruct[*pg.PgEnvs](envPg, pgEnvs)
-	if err != nil {
-		log.Fatal("error loading data into the structure pgEnvs")
-	}
-
-	err = uploadingStruct[*rb.RbEnvs](envRb, rbEnvs)
-	if err != nil {
-		log.Fatal("error loading data into the structure RbEnvs")
-	}
-
-	return pgEnvs, rbEnvs
-}
-
 func worker() {
 	defer log.Warning("worker закончил работу")
-	pgEnvs, rbEnvs := loadEnvs()
+	pgEnvs, rbEnvs := env.LoadEnvs()
 	confPg := pg.InitPg(*pgEnvs)
 	configRabbit := rb.InitRb(*rbEnvs)
 
