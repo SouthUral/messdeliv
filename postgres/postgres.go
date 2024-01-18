@@ -2,66 +2,49 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"time"
-
-	ut "messdelive/utils"
 
 	pgx "github.com/jackc/pgx/v5"
 	log "github.com/sirupsen/logrus"
 )
 
 type Postgres struct {
-	Host               string
-	Port               string
-	User               string
-	Password           string
-	DataBaseName       string
-	RecordingProcedure string
+	url                string
+	recordingProcedure string
+	funcGetOffset      string
 	Offset             string
 	Conn               *pgx.Conn
 	isReadyConn        bool
 }
 
-func (pg *Postgres) pgEnv() {
-	pg.Host = ut.GetEnvStr("ASD_POSTGRES_HOST")
-	pg.Port = ut.GetEnvStr("ASD_POSTGRES_PORT")
-	pg.User = ut.GetEnvStr("SERVICE_PG_ILOGIC_USERNAME")
-	pg.Password = ut.GetEnvStr("SERVICE_PG_ILOGIC_PASSWORD")
-	pg.DataBaseName = ut.GetEnvStr("ASD_POSTGRES_DBNAME")
-	pg.RecordingProcedure = ut.GetEnvStr("SERVICE_PG_PROCEDURE")
-	pg.Offset = ut.GetEnvStr("SERVICE_PG_GETOFFSET")
-	pg.isReadyConn = false
-}
-
 func (pg *Postgres) connPg() {
-	dbURL := fmt.Sprintf("postgres://%s:%s@%s:%s/%s", pg.User, pg.Password, pg.Host, pg.Port, pg.DataBaseName)
 	var err error
-	pg.Conn, err = pgx.Connect(context.Background(), dbURL)
+	pg.Conn, err = pgx.Connect(context.Background(), pg.url)
 	if err != nil {
-		log.Printf("QueryRow failed: %v\n", err)
+		log.Errorf("QueryRow failed: %v\n", err)
 	} else {
 		pg.isReadyConn = true
-		log.Printf("Connect DB is ready: %s\n", pg.DataBaseName)
+		log.Info("Connect DB is ready")
 	}
 }
 
-func (pg *Postgres) connPgloop() {
+func (pg *Postgres) connection() {
 	for {
 		if !pg.isReadyConn {
 			pg.connPg()
 		} else {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(3 * time.Second)
 	}
 
 }
 
+// Метод производит вызов процедуры в БД (процедура передается из переменной окружения)
 func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) error {
-	log.Info(pg.RecordingProcedure)
+	log.Info(pg.recordingProcedure)
 	// fmt.Sprintf(pg.RecordingProcedure)
-	_, err := pg.Conn.Exec(context.Background(), pg.RecordingProcedure, msg, offset_msg)
+	_, err := pg.Conn.Exec(context.Background(), pg.recordingProcedure, msg, offset_msg)
 	if err != nil {
 		log.Errorf("QueryRow failed: %v\n", err)
 		return err
@@ -69,10 +52,11 @@ func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) error {
 	return nil
 }
 
+// Метод возврщает последний оффсет из БД
 func (pg *Postgres) GetOffset() int {
 	var offset_msg int
 	if pg.isReadyConn {
-		err := pg.Conn.QueryRow(context.Background(), pg.Offset).Scan(&offset_msg)
+		err := pg.Conn.QueryRow(context.Background(), pg.funcGetOffset).Scan(&offset_msg)
 		if err != nil {
 			log.Errorf("QueryRow failed: %v\n", err)
 		} else {
@@ -82,12 +66,15 @@ func (pg *Postgres) GetOffset() int {
 	return offset_msg
 }
 
-func PgMainConnect() Postgres {
-	confPg := Postgres{}
-	confPg.pgEnv()
+// инициализирует Postgres{}, запускает чтение ENV и подключение к БД
+func InitPg(envs PgEnvs) *Postgres {
+	pg := &Postgres{
+		url:                envs.getUrl(),
+		recordingProcedure: envs.RecordingProcedure,
+		funcGetOffset:      envs.OffsetFunc,
+	}
 
-	confPg.connPgloop()
+	pg.connection()
 
-	time.Sleep(50 * time.Millisecond)
-	return confPg
+	return pg
 }

@@ -1,36 +1,18 @@
 package rabbit
 
 import (
-	"fmt"
 	"time"
-
-	ut "messdelive/utils"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	log "github.com/sirupsen/logrus"
 )
 
 type Rabbit struct {
-	Host         string
-	Port         string
-	VHost        string
-	User         string
-	Password     string
-	NameQueue    string
-	Heartbeat    int
-	RabbitConn   RabbitConn
-	StreamOffset int
+	url          string
+	nameQueue    string
+	rabbitConn   RabbitConn
+	streamOffset int
 	IsReadyConn  bool
-}
-
-func (rabbit *Rabbit) rabbitEnv() {
-	rabbit.Host = ut.GetEnvStr("ASD_RMQ_HOST")
-	rabbit.Port = ut.GetEnvStr("ASD_RMQ_PORT")
-	rabbit.VHost = ut.GetEnvStr("ASD_RMQ_VHOST")
-	rabbit.User = ut.GetEnvStr("SERVICE_RMQ_ENOTIFY_USERNAME")
-	rabbit.Password = ut.GetEnvStr("SERVICE_RMQ_ENOTIFY_PASSWORD")
-	rabbit.Heartbeat = ut.GetEnvInt("ASD_RMQ_HEARTBEAT")
-	rabbit.NameQueue = ut.GetEnvStr("SERVICE_RMQ_QUEUE")
 }
 
 func (rb *Rabbit) connRabbitloop() {
@@ -45,46 +27,46 @@ func (rb *Rabbit) connRabbitloop() {
 
 }
 
-func (rabbit *Rabbit) connRabbit() {
-	loginParameters := fmt.Sprintf("amqp://%s:%s@%s:%s/%s", rabbit.User, rabbit.Password, rabbit.Host, rabbit.Port, rabbit.VHost)
+// подключение к rabbitMQ
+func (r *Rabbit) connRabbit() {
 	var err error
-	rabbit.RabbitConn.Connector, err = amqp.Dial(loginParameters)
+	r.rabbitConn.Connector, err = amqp.Dial(r.url)
 	if err != nil {
-		log.Printf("Connect Rabbit failed: %v\n", err)
+		log.Infof("Connect Rabbit failed: %v\n", err)
 		return
 	}
 
-	rabbit.RabbitConn.Channel, err = rabbit.RabbitConn.Connector.Channel()
+	r.rabbitConn.Channel, err = r.rabbitConn.Connector.Channel()
 	if err != nil {
-		log.Printf("Channel Rabbit failed: %v\n", err)
+		log.Infof("Channel Rabbit failed: %v\n", err)
 		return
 	}
 
-	if err = rabbit.RabbitConn.Channel.Qos(1, 0, false); err != nil {
-		log.Printf("Qos Rabbit failed: %v\n", err)
+	if err = r.rabbitConn.Channel.Qos(1, 0, false); err != nil {
+		log.Infof("Qos Rabbit failed: %v\n", err)
 		return
 	}
 
-	rabbit.IsReadyConn = true
+	r.IsReadyConn = true
 }
 
-func (rabbit *Rabbit) Consumer() (<-chan amqp.Delivery, error) {
+func (r *Rabbit) Consumer() (<-chan amqp.Delivery, error) {
 	var args amqp.Table
 
-	if rabbit.StreamOffset > 0 {
-		args = amqp.Table{"x-stream-offset": rabbit.StreamOffset}
+	if r.streamOffset > 0 {
+		args = amqp.Table{"x-stream-offset": r.streamOffset}
 	} else {
 		args = amqp.Table{"x-stream-offset": "last"}
 	}
 
-	return rabbit.RabbitConn.Channel.Consume(
-		rabbit.NameQueue, // queue
-		"test_service",   // consumer
-		false,            // auto-ack
-		false,            // exclusive
-		false,            // no-local
-		false,            // no-wait
-		args,             // args
+	return r.rabbitConn.Channel.Consume(
+		r.nameQueue,    // queue
+		"test_service", // consumer
+		false,          // auto-ack
+		false,          // exclusive
+		false,          // no-local
+		false,          // no-wait
+		args,           // args
 	)
 }
 
@@ -93,16 +75,18 @@ type RabbitConn struct {
 	Channel   *amqp.Channel
 }
 
-func RabbitMainConnect(offset int) Rabbit {
-	configRabbit := Rabbit{}
-
-	configRabbit.StreamOffset = offset
-	if configRabbit.StreamOffset > 0 {
-		configRabbit.StreamOffset += 1
+func InitRb(envs RbEnvs) *Rabbit {
+	rb := &Rabbit{
+		url:       envs.getUrl(),
+		nameQueue: envs.NameQueue,
 	}
 
-	configRabbit.rabbitEnv()
-	configRabbit.connRabbitloop()
+	// rb.StreamOffset = offset
+	// if rb.StreamOffset > 0 {
+	// 	rb.StreamOffset += 1
+	// }
 
-	return configRabbit
+	rb.connRabbitloop()
+
+	return rb
 }

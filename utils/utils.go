@@ -1,31 +1,42 @@
 package utils
 
 import (
-	"fmt"
 	"os"
-	"strconv"
 
 	log "github.com/sirupsen/logrus"
 )
 
-func GetEnvStr(key string) string {
-	value, exists := os.LookupEnv(key)
-	if exists {
-		log.Info(value)
-		return value
-	}
-	log.Panic(fmt.Sprintf("Environment variable not found: %s", key))
-	return ""
+type EnvLoader struct {
+	unloadedVariables []string
 }
 
-func GetEnvInt(key string) int {
-	if value, exists := os.LookupEnv(key); exists {
-		val, err := strconv.Atoi(value)
-		if err != nil {
-			log.Fatal(err)
-		}
-		return val
+func InitEnvLoader() *EnvLoader {
+	res := &EnvLoader{
+		unloadedVariables: make([]string, 0, 0),
 	}
-	log.Panic(fmt.Sprintf("Environment variable not found: %s", key))
-	return 0
+	return res
+}
+
+// метод загрузки переменных окружения
+func (e *EnvLoader) Load(keys map[string]string) map[string]string {
+	res := make(map[string]string, len(keys))
+
+	for key, envKey := range keys {
+		value, exists := os.LookupEnv(envKey)
+		if exists {
+			res[key] = value
+		} else {
+			e.unloadedVariables = append(e.unloadedVariables, envKey)
+			log.Warningf("the %s variable is not loaded", envKey)
+		}
+	}
+	return res
+}
+
+// метод проверки, были ли незагруженные переменные
+func (e *EnvLoader) CheckUnloadEnvs() bool {
+	if len(e.unloadedVariables) > 0 {
+		return false
+	}
+	return true
 }
