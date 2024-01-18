@@ -36,7 +36,7 @@ func worker() {
 
 	m, err := configRabbit.Consumer()
 	if err != nil {
-		log.Printf("Failed to register a consumer: %v\n", err)
+		log.Errorf("Failed to register a consumer: %v\n", err)
 		configRabbit.IsReadyConn = false
 		return
 	}

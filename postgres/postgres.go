@@ -13,31 +13,60 @@ type Postgres struct {
 	recordingProcedure string
 	funcGetOffset      string
 	Offset             string
+	IncomingCh         chan interface{}
 	Conn               *pgx.Conn
-	isReadyConn        bool
+	isReadyConn        bool // флаг показывающий подключен ли сервис к БД
+}
+
+// основной процесс
+func (p *Postgres) mainProcess(ctx context.Context) {
+	p.connection(10)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-p.IncomingCh:
+			event := msg.(msgEvent)
+			switch event.GetTypeMsg() {
+			case typeGetOffset:
+				responce := answerEvent{
+					offset: p.GetOffset(),
+				}
+				event.GetReverceCh() <- responce
+			}
+		}
+	}
+
 }
 
 func (pg *Postgres) connPg() {
 	var err error
 	pg.Conn, err = pgx.Connect(context.Background(), pg.url)
 	if err != nil {
-		log.Errorf("QueryRow failed: %v\n", err)
+		log.Errorf("Database connection error: %v\n", err)
+		pg.isReadyConn = false
 	} else {
 		pg.isReadyConn = true
 		log.Info("Connect DB is ready")
 	}
 }
 
-func (pg *Postgres) connection() {
-	for {
+// func (pg *Postgres) sendingResponse(revCh chan interface{}, answer answerEvent) {
+// 	revCh <- answer
+// }
+
+// цикл переподключения
+func (pg *Postgres) connection(maxAttempts int) bool {
+	for i := 0; i < maxAttempts; i++ {
 		if !pg.isReadyConn {
 			pg.connPg()
 		} else {
-			return
+			return true
 		}
 		time.Sleep(3 * time.Second)
 	}
-
+	return false
 }
 
 // Метод производит вызов процедуры в БД (процедура передается из переменной окружения)
@@ -74,7 +103,7 @@ func InitPg(envs envs) *Postgres {
 		funcGetOffset:      envs.GetOffsetFunc(),
 	}
 
-	pg.connection()
+	pg.mainProcess(context.TODO())
 
 	return pg
 }
