@@ -34,6 +34,13 @@ func (p *Postgres) mainProcess(ctx context.Context) {
 					offset: p.GetOffset(),
 				}
 				event.GetReverceCh() <- responce
+			case typeInputMsg:
+
+				err := p.RequestDb(event.GetMsg(), event.GetOffset())
+				if err != nil {
+					ctxCheck, _ := context.WithTimeout(context.Background(), 5*time.Second)
+					p.Conn.Ping(ctxCheck)
+				}
 			}
 		}
 	}
