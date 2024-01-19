@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 
@@ -28,34 +29,10 @@ func init() {
 	}
 }
 
-func worker() {
-	defer log.Warning("worker закончил работу")
-	pgEnvs, rbEnvs := env.LoadEnvs()
-	confPg := pg.InitPg(*pgEnvs)
-	configRabbit := rb.InitRb(*rbEnvs)
-
-	m, err := configRabbit.Consumer()
-	if err != nil {
-		log.Errorf("Failed to register a consumer: %v\n", err)
-		configRabbit.IsReadyConn = false
-		return
-	}
-
-	for d := range m {
-		offset := d.Headers["x-stream-offset"].(int64)
-		log.Printf("Received a message %d", offset)
-		err := confPg.RequestDb(d.Body, offset)
-		if err == nil {
-			log.Printf("Данные записаны в БД")
-			d.Ack(true)
-		} else {
-			log.Error(err, "сообщение об ошибке")
-			return
-		}
-
-	}
-}
-
 func main() {
-	worker()
+	pgEnvs, rbEnvs := env.LoadEnvs()
+	rabbit := rb.InitRb(*rbEnvs)
+	pg.InitPg(*pgEnvs, rabbit.GetChan())
+	rabbit.StartRb()
+	time.Sleep(2 * time.Minute)
 }

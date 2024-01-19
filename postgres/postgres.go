@@ -27,16 +27,17 @@ type Postgres struct {
 func (p *Postgres) mainProcess(ctx context.Context, numberAttempts int) {
 
 	go func() {
-		defer log.Warning("mainProcess has finished its work")
+		defer log.Warning("Postgres: mainProcess has finished its work")
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case msg := <-p.IncomingCh:
+				log.Info("Postgres: a message has been received")
 				event, ok := msg.(msgEvent)
 				if !ok {
 					// прекратить работу, ошибка приведения типа
-					log.Error("type conversion error")
+					log.Error("Postgres: type conversion error")
 					p.PostgresShutdown()
 				}
 				answer, err := p.requestMaker(event, numberAttempts)
@@ -64,23 +65,23 @@ func (p *Postgres) requestMaker(event msgEvent, numberAttempts int) (answerEvent
 		case typeGetOffset:
 			offset, err, isConn := p.GetOffset()
 			if !isConn {
-				time.Sleep(1 * time.Second)
+				time.Sleep(50 * time.Millisecond)
 				continue
+			} else {
+				answer.offset = offset
+				return answer, err
 			}
-
-			answer.offset = offset
-			return answer, err
 		case typeInputMsg:
 			err, isConn := p.RequestDb(event.GetMsg(), event.GetOffset())
 			if !isConn {
-				time.Sleep(1 * time.Second)
+				time.Sleep(50 * time.Millisecond)
 				continue
 			}
 			return answer, err
 		}
 	}
 
-	err = fmt.Errorf("the number of attempts to send the request has been exceeded")
+	err = fmt.Errorf("Postgres: the number of attempts to send the request has been exceeded")
 	return answer, err
 }
 
@@ -93,10 +94,11 @@ func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) (error, bool) {
 		_, err = pg.Conn.Exec(context.Background(), pg.recordingProcedure, msg, offset_msg)
 		pg.mx.Unlock()
 		if err != nil {
-			log.Errorf("QueryRow failed: %v\n", err)
+			log.Errorf("Postgres: QueryRow failed: %v\n", err)
 			return err, true
 		} else {
-			log.Info("the message is recorded in the database")
+			log.Info("Postgres: the message is recorded in the database")
+			return err, true
 		}
 	}
 	return err, false
@@ -104,12 +106,12 @@ func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) (error, bool) {
 
 // Метод возврщает последний оффсет из БД, ошибку запроса, флаг подключения к БД
 func (pg *Postgres) GetOffset() (int, error, bool) {
+	defer pg.mx.Unlock()
 	var err error
 	var offset_msg int
 	if pg.getIsReadyConn() {
 		pg.mx.Lock()
 		err = pg.Conn.QueryRow(context.Background(), pg.funcGetOffset).Scan(&offset_msg)
-		pg.mx.Unlock()
 		if err != nil {
 			log.Errorf("QueryRow failed: %v\n", err)
 		} else {
@@ -176,8 +178,8 @@ func (pg *Postgres) connPg() {
 func (pg *Postgres) checkConn() {
 	defer pg.mx.Unlock()
 	ctxCheck, _ := context.WithTimeout(context.Background(), 5*time.Second)
-	err := pg.Conn.Ping(ctxCheck)
 	pg.mx.Lock()
+	err := pg.Conn.Ping(ctxCheck)
 	if err != nil {
 		log.Errorf("Database connection error: %v\n", err)
 		pg.isReadyConn = false
@@ -202,12 +204,13 @@ func (pg *Postgres) setIsReadyConn(value bool) {
 
 // Закрытие подключения к БД
 func (p *Postgres) CloseConn() {
-	defer p.mx.Unlock()
+	// defer p.mx.Unlock()
 	p.checkConn()
 	if p.getIsReadyConn() {
 		ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 		p.mx.Lock()
 		err := p.Conn.Close(ctx)
+		p.mx.Unlock()
 		if err != nil {
 			log.Error(err)
 		} else {
@@ -221,6 +224,7 @@ func (p *Postgres) CloseConn() {
 // метод для прекращения работы Postgres
 func (p *Postgres) PostgresShutdown() {
 	p.cancel()
+	time.Sleep(50 * time.Millisecond)
 	p.CloseConn()
 	log.Warning("postgres has finished its work")
 }
@@ -238,9 +242,9 @@ func InitPg(envs envs, incomingCh chan interface{}) *Postgres {
 		cancel:             cancel,
 	}
 
-	pg.processConnDB(ctx, 10, 3)
+	pg.processConnDB(ctx, 15, 2)
 	time.Sleep(50 * time.Millisecond)
-	pg.mainProcess(ctx, 10)
+	pg.mainProcess(ctx, 15)
 
 	return pg
 }
