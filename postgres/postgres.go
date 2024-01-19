@@ -18,15 +18,16 @@ type Postgres struct {
 	IncomingCh         chan interface{}
 	Conn               *pgx.Conn
 	mx                 sync.RWMutex
-	isReadyConn        bool // флаг показывающий подключен ли сервис к БД
+	isReadyConn        bool   // флаг показывающий подключен ли сервис к БД
+	cancel             func() // функция закрытия контекста
 }
 
 // Основной процесс, получает сообщения, запускает логику.
 // Параметры: конекст, количество попыток при неудачном запросе
 func (p *Postgres) mainProcess(ctx context.Context, numberAttempts int) {
-	defer log.Warning("mainProcess has finished its work")
 
 	go func() {
+		defer log.Warning("mainProcess has finished its work")
 		for {
 			select {
 			case <-ctx.Done():
@@ -34,14 +35,16 @@ func (p *Postgres) mainProcess(ctx context.Context, numberAttempts int) {
 			case msg := <-p.IncomingCh:
 				event, ok := msg.(msgEvent)
 				if !ok {
-					// прекратить работу
+					// прекратить работу, ошибка приведения типа
 					log.Error("type conversion error")
+					p.PostgresShutdown()
 				}
 				answer, err := p.requestMaker(event, numberAttempts)
 				if err != nil {
 					// ошибка запроса, либо закончились попытки
 					// прекратить работу
 					log.Error(err)
+					p.PostgresShutdown()
 				}
 				event.GetReverceCh() <- answer
 			}
@@ -117,15 +120,42 @@ func (pg *Postgres) GetOffset() (int, error, bool) {
 	return offset_msg, err, false
 }
 
+// процесс контроля за подключением к БД.
+// Параметры: количество попыток подключения, время ожидания между проверками состояния
+func (p *Postgres) processConnDB(ctx context.Context, numberAttempts, timeSleep int) {
+
+	go func() {
+		defer log.Warning("processConnDB has finished its work")
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if p.getIsReadyConn() {
+					time.Sleep(time.Duration(timeSleep) * time.Second)
+					p.checkConn()
+				} else {
+					if !p.connection(numberAttempts) {
+						// все попытки подключения провалены
+						// завершение работы
+						p.PostgresShutdown()
+						return
+					}
+				}
+			}
+		}
+	}()
+}
+
 // цикл переподключения
 func (pg *Postgres) connection(numberAttempts int) bool {
 	for i := 0; i < numberAttempts; i++ {
-		if !pg.isReadyConn {
+		if !pg.getIsReadyConn() {
 			pg.connPg()
 		} else {
 			return true
 		}
-		time.Sleep(3 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
 	return false
 }
@@ -135,9 +165,9 @@ func (pg *Postgres) connPg() {
 	pg.Conn, err = pgx.Connect(context.Background(), pg.url)
 	if err != nil {
 		log.Errorf("Database connection error: %v\n", err)
-		pg.isReadyConn = false
+		pg.setIsReadyConn(false)
 	} else {
-		pg.isReadyConn = true
+		pg.setIsReadyConn(true)
 		log.Info("Connect DB is ready")
 	}
 }
@@ -164,16 +194,53 @@ func (pg *Postgres) getIsReadyConn() bool {
 	return res
 }
 
+func (pg *Postgres) setIsReadyConn(value bool) {
+	defer pg.mx.Unlock()
+	pg.mx.Lock()
+	pg.isReadyConn = value
+}
+
+// Закрытие подключения к БД
+func (p *Postgres) CloseConn() {
+	defer p.mx.Unlock()
+	p.checkConn()
+	if p.getIsReadyConn() {
+		ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+		p.mx.Lock()
+		err := p.Conn.Close(ctx)
+		if err != nil {
+			log.Error(err)
+		} else {
+			log.Info("the connection to the database is closed")
+		}
+		return
+	}
+	log.Warning("the connection to the database has already been closed")
+}
+
+// метод для прекращения работы Postgres
+func (p *Postgres) PostgresShutdown() {
+	p.cancel()
+	p.CloseConn()
+	log.Warning("postgres has finished its work")
+}
+
 // инициализирует Postgres{}, запускает чтение ENV и подключение к БД
-func InitPg(envs envs) *Postgres {
+func InitPg(envs envs, incomingCh chan interface{}) *Postgres {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	pg := &Postgres{
 		url:                envs.GetUrl(),
 		recordingProcedure: envs.GetRecProcedure(),
 		funcGetOffset:      envs.GetOffsetFunc(),
 		mx:                 sync.RWMutex{},
+		IncomingCh:         incomingCh,
+		cancel:             cancel,
 	}
 
-	pg.mainProcess(context.TODO(), 10)
+	pg.processConnDB(ctx, 10, 3)
+	time.Sleep(50 * time.Millisecond)
+	pg.mainProcess(ctx, 10)
 
 	return pg
 }
