@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"time"
 
 	pgx "github.com/jackc/pgx/v5"
@@ -15,36 +17,117 @@ type Postgres struct {
 	Offset             string
 	IncomingCh         chan interface{}
 	Conn               *pgx.Conn
+	mx                 sync.RWMutex
 	isReadyConn        bool // флаг показывающий подключен ли сервис к БД
 }
 
-// основной процесс
-func (p *Postgres) mainProcess(ctx context.Context) {
-	p.connection(10)
+// Основной процесс, получает сообщения, запускает логику.
+// Параметры: конекст, количество попыток при неудачном запросе
+func (p *Postgres) mainProcess(ctx context.Context, numberAttempts int) {
+	defer log.Warning("mainProcess has finished its work")
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg := <-p.IncomingCh:
-			event := msg.(msgEvent)
-			switch event.GetTypeMsg() {
-			case typeGetOffset:
-				responce := answerEvent{
-					offset: p.GetOffset(),
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg := <-p.IncomingCh:
+				event, ok := msg.(msgEvent)
+				if !ok {
+					// прекратить работу
+					log.Error("type conversion error")
 				}
-				event.GetReverceCh() <- responce
-			case typeInputMsg:
-
-				err := p.RequestDb(event.GetMsg(), event.GetOffset())
+				answer, err := p.requestMaker(event, numberAttempts)
 				if err != nil {
-					ctxCheck, _ := context.WithTimeout(context.Background(), 5*time.Second)
-					p.Conn.Ping(ctxCheck)
+					// ошибка запроса, либо закончились попытки
+					// прекратить работу
+					log.Error(err)
 				}
+				event.GetReverceCh() <- answer
 			}
+		}
+
+	}()
+}
+
+// Метод производит запрос, если запрос был провален из-за проблемы подключения к БД то запрос повториться указанное количество раз.
+// Если запрос провалился из-за ошибки запроса то вернется ошибка
+func (p *Postgres) requestMaker(event msgEvent, numberAttempts int) (answerEvent, error) {
+	var err error
+	answer := answerEvent{}
+
+	for i := 0; i < numberAttempts; i++ {
+		switch event.GetTypeMsg() {
+		case typeGetOffset:
+			offset, err, isConn := p.GetOffset()
+			if !isConn {
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			answer.offset = offset
+			return answer, err
+		case typeInputMsg:
+			err, isConn := p.RequestDb(event.GetMsg(), event.GetOffset())
+			if !isConn {
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			return answer, err
 		}
 	}
 
+	err = fmt.Errorf("the number of attempts to send the request has been exceeded")
+	return answer, err
+}
+
+// Метод производит вызов процедуры в БД (процедура передается из переменной окружения).
+// Возвращает ошибку и флаг подключения к БД
+func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) (error, bool) {
+	var err error
+	if pg.getIsReadyConn() {
+		pg.mx.Lock()
+		_, err = pg.Conn.Exec(context.Background(), pg.recordingProcedure, msg, offset_msg)
+		pg.mx.Unlock()
+		if err != nil {
+			log.Errorf("QueryRow failed: %v\n", err)
+			return err, true
+		} else {
+			log.Info("the message is recorded in the database")
+		}
+	}
+	return err, false
+}
+
+// Метод возврщает последний оффсет из БД, ошибку запроса, флаг подключения к БД
+func (pg *Postgres) GetOffset() (int, error, bool) {
+	var err error
+	var offset_msg int
+	if pg.getIsReadyConn() {
+		pg.mx.Lock()
+		err = pg.Conn.QueryRow(context.Background(), pg.funcGetOffset).Scan(&offset_msg)
+		pg.mx.Unlock()
+		if err != nil {
+			log.Errorf("QueryRow failed: %v\n", err)
+		} else {
+			log.Infof("the request GetOffset was successfully, offset : %d", offset_msg)
+		}
+		return offset_msg, err, true
+	}
+	return offset_msg, err, false
+}
+
+// цикл переподключения
+func (pg *Postgres) connection(numberAttempts int) bool {
+	for i := 0; i < numberAttempts; i++ {
+		if !pg.isReadyConn {
+			pg.connPg()
+		} else {
+			return true
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return false
 }
 
 func (pg *Postgres) connPg() {
@@ -59,47 +142,26 @@ func (pg *Postgres) connPg() {
 	}
 }
 
-// func (pg *Postgres) sendingResponse(revCh chan interface{}, answer answerEvent) {
-// 	revCh <- answer
-// }
-
-// цикл переподключения
-func (pg *Postgres) connection(maxAttempts int) bool {
-	for i := 0; i < maxAttempts; i++ {
-		if !pg.isReadyConn {
-			pg.connPg()
-		} else {
-			return true
-		}
-		time.Sleep(3 * time.Second)
-	}
-	return false
-}
-
-// Метод производит вызов процедуры в БД (процедура передается из переменной окружения)
-func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) error {
-	log.Info(pg.recordingProcedure)
-	// fmt.Sprintf(pg.RecordingProcedure)
-	_, err := pg.Conn.Exec(context.Background(), pg.recordingProcedure, msg, offset_msg)
+// метод для проверки подключения к БД
+func (pg *Postgres) checkConn() {
+	defer pg.mx.Unlock()
+	ctxCheck, _ := context.WithTimeout(context.Background(), 5*time.Second)
+	err := pg.Conn.Ping(ctxCheck)
+	pg.mx.Lock()
 	if err != nil {
-		log.Errorf("QueryRow failed: %v\n", err)
-		return err
+		log.Errorf("Database connection error: %v\n", err)
+		pg.isReadyConn = false
+		return
 	}
-	return nil
+	pg.isReadyConn = true
 }
 
-// Метод возврщает последний оффсет из БД
-func (pg *Postgres) GetOffset() int {
-	var offset_msg int
-	if pg.isReadyConn {
-		err := pg.Conn.QueryRow(context.Background(), pg.funcGetOffset).Scan(&offset_msg)
-		if err != nil {
-			log.Errorf("QueryRow failed: %v\n", err)
-		} else {
-			log.Infof("the request GetOffset was successfully, offset : %d", offset_msg)
-		}
-	}
-	return offset_msg
+// потокобезопасно возвращает флаг isReadyConn, который сигнализирует о подключении к БД
+func (pg *Postgres) getIsReadyConn() bool {
+	defer pg.mx.RUnlock()
+	pg.mx.RLock()
+	res := pg.isReadyConn
+	return res
 }
 
 // инициализирует Postgres{}, запускает чтение ENV и подключение к БД
@@ -108,9 +170,10 @@ func InitPg(envs envs) *Postgres {
 		url:                envs.GetUrl(),
 		recordingProcedure: envs.GetRecProcedure(),
 		funcGetOffset:      envs.GetOffsetFunc(),
+		mx:                 sync.RWMutex{},
 	}
 
-	pg.mainProcess(context.TODO())
+	pg.mainProcess(context.TODO(), 10)
 
 	return pg
 }
