@@ -15,6 +15,7 @@ type Postgres struct {
 	recordingProcedure string
 	funcGetOffset      string
 	Offset             string
+	waitingTime        int // время ожидания между попытками запроса
 	IncomingCh         chan interface{}
 	Conn               *pgx.Conn
 	mx                 sync.RWMutex
@@ -23,7 +24,8 @@ type Postgres struct {
 }
 
 // Основной процесс, получает сообщения, запускает логику.
-// Параметры: конекст, количество попыток при неудачном запросе
+// ctx: общий контекст для postgres;
+// numberAttempts: количество попыток запроса к БД (5-20)
 func (p *Postgres) mainProcess(ctx context.Context, numberAttempts int) {
 
 	go func() {
@@ -40,7 +42,7 @@ func (p *Postgres) mainProcess(ctx context.Context, numberAttempts int) {
 					log.Error("Postgres: type conversion error")
 					p.PostgresShutdown()
 				}
-				answer, err := p.requestMaker(event, numberAttempts)
+				answer, err := p.requestMaker(event, numberAttempts, p.waitingTime)
 				if err != nil {
 					// ошибка запроса, либо закончились попытки
 					// прекратить работу
@@ -55,8 +57,11 @@ func (p *Postgres) mainProcess(ctx context.Context, numberAttempts int) {
 }
 
 // Метод производит запрос, если запрос был провален из-за проблемы подключения к БД то запрос повториться указанное количество раз.
-// Если запрос провалился из-за ошибки запроса то вернется ошибка
-func (p *Postgres) requestMaker(event msgEvent, numberAttempts int) (answerEvent, error) {
+// Если запрос провалился из-за ошибки запроса то вернется ошибка.
+// event: интерфейс полученного сообщения;
+// numberAttempts: количество попыток отправки запроса;
+// waitingTime: время ожидания между попытками в миллисекундах
+func (p *Postgres) requestMaker(event msgEvent, numberAttempts, waitingTime int) (answerEvent, error) {
 	var err error
 	answer := answerEvent{}
 
@@ -65,7 +70,7 @@ func (p *Postgres) requestMaker(event msgEvent, numberAttempts int) (answerEvent
 		case typeGetOffset:
 			offset, err, isConn := p.GetOffset()
 			if !isConn {
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(time.Duration(waitingTime) * time.Millisecond)
 				continue
 			} else {
 				answer.offset = offset
@@ -74,7 +79,7 @@ func (p *Postgres) requestMaker(event msgEvent, numberAttempts int) (answerEvent
 		case typeInputMsg:
 			err, isConn := p.RequestDb(event.GetMsg(), event.GetOffset())
 			if !isConn {
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(time.Duration(waitingTime) * time.Millisecond)
 				continue
 			}
 			return answer, err
@@ -106,12 +111,13 @@ func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) (error, bool) {
 
 // Метод возврщает последний оффсет из БД, ошибку запроса, флаг подключения к БД
 func (pg *Postgres) GetOffset() (int, error, bool) {
-	defer pg.mx.Unlock()
+	// defer pg.mx.Unlock()
 	var err error
 	var offset_msg int
 	if pg.getIsReadyConn() {
 		pg.mx.Lock()
 		err = pg.Conn.QueryRow(context.Background(), pg.funcGetOffset).Scan(&offset_msg)
+		pg.mx.Unlock()
 		if err != nil {
 			log.Errorf("QueryRow failed: %v\n", err)
 		} else {
@@ -204,7 +210,6 @@ func (pg *Postgres) setIsReadyConn(value bool) {
 
 // Закрытие подключения к БД
 func (p *Postgres) CloseConn() {
-	// defer p.mx.Unlock()
 	p.checkConn()
 	if p.getIsReadyConn() {
 		ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
@@ -229,8 +234,12 @@ func (p *Postgres) PostgresShutdown() {
 	log.Warning("postgres has finished its work")
 }
 
-// инициализирует Postgres{}, запускает чтение ENV и подключение к БД
-func InitPg(envs envs, incomingCh chan interface{}) *Postgres {
+// инициализирует Postgres{}, запускает чтение ENV и подключение к БД.
+// waitingTime: время ожидания между попытками запроса к БД в миллисекундах;
+// numberAttemptsBDrequest: количество попыток запроса к БД (5-20);
+// numberAttemptsConnect: количество попыток переподключения к БД (10-30);
+// waitingTimeConn: время ожидания между попытками переподключения к БД в секундах (1-10).
+func InitPg(envs envs, incomingCh chan interface{}, waitingTime, numberAttemptsBDrequest, numberAttemptsConnect, waitingTimeConn int) (*Postgres, context.Context) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pg := &Postgres{
@@ -240,11 +249,12 @@ func InitPg(envs envs, incomingCh chan interface{}) *Postgres {
 		mx:                 sync.RWMutex{},
 		IncomingCh:         incomingCh,
 		cancel:             cancel,
+		waitingTime:        waitingTime,
 	}
 
-	pg.processConnDB(ctx, 15, 2)
+	pg.processConnDB(ctx, numberAttemptsConnect, waitingTimeConn)
 	time.Sleep(50 * time.Millisecond)
-	pg.mainProcess(ctx, 15)
+	pg.mainProcess(ctx, numberAttemptsBDrequest)
 
-	return pg
+	return pg, ctx
 }
