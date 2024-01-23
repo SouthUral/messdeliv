@@ -9,6 +9,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// func init() {
+// 	log.FieldKeyFile := "rabbit"
+// }
+
 type Rabbit struct {
 	url          string
 	nameQueue    string
@@ -25,79 +29,82 @@ func (r *Rabbit) GetChan() chan interface{} {
 	return r.outgoingCh
 }
 
-// процесс мониторинга и переподключения коннекта RabbitMQ.
+// Процесс мониторинга и переподключения коннекта RabbitMQ.
 // ctx: общий контекст Rabbit;
 // numberAttempts: количество попыток переподключения;
 // timeSleep: время ожидания между проверками подключения.
 func (r *Rabbit) processConnRb(ctx context.Context, numberAttempts, timeSleep int) {
-	var numbeRestarts int
+	defer log.Warning("processConnRb has finished its work")
+	log.Info("start processConnRb")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			if r.rabbitConn == nil {
+				rc, err := InitRabbitConn(r.url, numberAttempts, timeSleep)
+				if err != nil {
+					log.Error("connection error during RabbitConn initialization")
+					r.RabbitShutdown()
+					return
+				}
+				r.mx.Lock()
+				r.rabbitConn = rc
+				r.mx.Unlock()
+			}
 
-	go func() {
-		defer log.Warning("processConnRb has finished its work")
-		log.Info("start processConnRb")
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				if r.rabbitConn.CheckStatusReady() {
-					numbeRestarts = 0
-					time.Sleep(time.Duration(timeSleep) * time.Second)
-				} else {
-					if numbeRestarts < numberAttempts {
-						err := r.rabbitConn.CreateConnChan()
-						if err != nil {
-							numbeRestarts++
-							continue
-						}
-					} else {
-						r.RabbitShutdown()
-					}
+			if r.rabbitConn.CheckStatusReady() {
+				time.Sleep(time.Duration(timeSleep) * time.Second)
+			} else {
+				err := r.rabbitConn.CreateConnChan()
+				if err != nil {
+					log.Error("connection to RabbitMQ could not be restored")
+					r.RabbitShutdown()
+					return
 				}
 			}
 		}
-
-	}()
+	}
 }
 
+// Процесс:
 // Принимает общий для всех горутин rabbit контекст.
 // Контролирует состояние Consumer, пересоздает его, если старый перестал работать.
 // ctx: общий контекст Rabbit;
 // numberAttempts: количество попыток создания Consumer;
 // timeWait: интервал между проверками, передается внутрь функции CreateConsumer.
 func (r *Rabbit) controlConsumers(ctx context.Context, numberAttempts, timeWait int) {
-
-	go func() {
-		defer log.Warning("ControlConsumers has finished its work")
-		log.Info("start ControlConsumers")
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				if r.rabbitConn != nil {
-					if r.rabbitConn.GetStatus() {
-						if r.consumer == nil {
-							err := r.createConsumer(ctx, numberAttempts, timeWait)
-							if err != nil {
-								log.Error("the number of attempts to create a consumer has ended")
-								r.RabbitShutdown()
-								return
-							}
-						} else {
-							if !r.consumer.GetStatus() {
-								r.consumer = nil
-							}
+	defer log.Warning("ControlConsumers has finished its work")
+	log.Info("start ControlConsumers")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			if r.rabbitConn != nil {
+				if r.rabbitConn.GetStatus() {
+					if r.consumer == nil {
+						err := r.createConsumer(ctx, numberAttempts, timeWait)
+						if err != nil {
+							log.Error("the number of attempts to create a consumer has ended")
+							r.RabbitShutdown()
+							return
+						}
+					} else {
+						if !r.consumer.GetStatus() {
+							r.consumer = nil
 						}
 					}
 				}
-				time.Sleep(time.Duration(timeWait) * time.Second)
 			}
+			time.Sleep(time.Duration(timeWait) * time.Second)
 		}
-	}()
+	}
+
 }
 
-// Создает Consumer.
+// Метод:
+// создает Consumer.
 // Делает numberAttempts количество попыток с интервалом timeWait.
 // Если все попытки были неудачными то вернет false
 // ctx: общий контекст Rabbit;
@@ -128,37 +135,37 @@ func (r *Rabbit) createConsumer(ctx context.Context, numberAttempts, timeWait in
 	return err
 }
 
+// Процесс:
 // получает события от Consumer и отправляет на сохранение в БД.
 // ctx: общий контекст Rabbit;
 // waitingTime: время ожидания между обращениями к потребителю в миллисекундах
 func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime int) {
-	go func() {
-		defer log.Warning("sendingMessages has finished its work")
-		log.Info("start sendingMessages")
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				event, err := r.getConsEvent()
+	defer log.Warning("sendingMessages has finished its work")
+	log.Info("start sendingMessages")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			event, err := r.getConsEvent()
+			if err != nil {
+				// log.Warning(err)
+				// небольшое ожидание
+				time.Sleep(time.Duration(waitingTime) * time.Millisecond)
+			} else {
+				r.outgoingCh <- event
+				_, err := r.getResponse(event.reverceCh, r.timeWaitBD)
 				if err != nil {
-					// log.Warning(err)
-					// небольшое ожидание
-					time.Sleep(time.Duration(waitingTime) * time.Millisecond)
-				} else {
-					r.outgoingCh <- event
-					_, err := r.getResponse(event.reverceCh, r.timeWaitBD)
-					if err != nil {
-						log.Error(err)
-						r.RabbitShutdown()
-						return
-					}
-					// отправка сигнала, для разблокировки Consumer
-					event.signal()
+					log.Error(err)
+					r.RabbitShutdown()
+					return
 				}
+				// отправка сигнала, для разблокировки Consumer
+				event.signal()
 			}
 		}
-	}()
+	}
+
 }
 
 // метод получает событие от Consumer
@@ -234,7 +241,9 @@ func (r *Rabbit) getResponse(ch chan interface{}, timeWait int) (answerEvent, er
 // прекращение всех процессов Rabbit
 func (r *Rabbit) RabbitShutdown() {
 	r.cancel()
-	r.rabbitConn.Shutdown()
+	if r.rabbitConn != nil {
+		r.rabbitConn.Shutdown()
+	}
 	log.Warning("rabbit has finished its work")
 }
 
@@ -249,13 +258,6 @@ func InitRb(envs envs, timeWaitBD int) *Rabbit {
 		timeWaitBD: timeWaitBD,
 	}
 
-	rc, err := InitRabbitConn(envs.GetUrl(), 15, 1)
-	if err != nil {
-		log.Error("connection error when starting Rabbit")
-	}
-
-	rb.rabbitConn = rc
-
 	return rb
 }
 
@@ -267,9 +269,9 @@ func (r *Rabbit) StartRb(numberAttempts, timeWait, waitingTime int) context.Cont
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 
-	r.processConnRb(ctx, numberAttempts, timeWait)
-	r.controlConsumers(ctx, numberAttempts, timeWait)
-	r.sendingMessages(ctx, waitingTime)
+	go r.processConnRb(ctx, numberAttempts, timeWait)
+	go r.controlConsumers(ctx, numberAttempts, timeWait)
+	go r.sendingMessages(ctx, waitingTime)
 
 	return ctx
 }

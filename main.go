@@ -32,7 +32,7 @@ func init() {
 func main() {
 	defer log.Info("messDeliv finished the job")
 	pgEnvs, rbEnvs := env.LoadEnvs()
-	rbMain := rb.InitRb(*rbEnvs, 5)
+	rbMain := rb.InitRb(*rbEnvs, 20)
 	pgMain, ctxPg := pg.InitPg(*pgEnvs, rbMain.GetChan(), 500, 30, 30, 3)
 	ctxRb := rbMain.StartRb(20, 3, 50)
 	for {

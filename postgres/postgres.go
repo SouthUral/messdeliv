@@ -111,7 +111,6 @@ func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) (error, bool) {
 
 // Метод возврщает последний оффсет из БД, ошибку запроса, флаг подключения к БД
 func (pg *Postgres) GetOffset() (int, error, bool) {
-	// defer pg.mx.Unlock()
 	var err error
 	var offset_msg int
 	if pg.getIsReadyConn() {
@@ -183,9 +182,17 @@ func (pg *Postgres) connPg() {
 // метод для проверки подключения к БД
 func (pg *Postgres) checkConn() {
 	defer pg.mx.Unlock()
+	var err error
+
 	ctxCheck, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	pg.mx.Lock()
-	err := pg.Conn.Ping(ctxCheck)
+
+	if pg.Conn != nil {
+		err = pg.Conn.Ping(ctxCheck)
+	} else {
+		err = fmt.Errorf("the connector is not defined")
+	}
+
 	if err != nil {
 		log.Errorf("Database connection error: %v\n", err)
 		pg.isReadyConn = false
@@ -199,7 +206,8 @@ func (pg *Postgres) getIsReadyConn() bool {
 	defer pg.mx.RUnlock()
 	pg.mx.RLock()
 	res := pg.isReadyConn
-	return res
+	connNotnil := pg.Conn != nil
+	return res && connNotnil
 }
 
 func (pg *Postgres) setIsReadyConn(value bool) {
@@ -239,7 +247,12 @@ func (p *Postgres) PostgresShutdown() {
 // numberAttemptsBDrequest: количество попыток запроса к БД (5-20);
 // numberAttemptsConnect: количество попыток переподключения к БД (10-30);
 // waitingTimeConn: время ожидания между попытками переподключения к БД в секундах (1-10).
-func InitPg(envs envs, incomingCh chan interface{}, waitingTime, numberAttemptsBDrequest, numberAttemptsConnect, waitingTimeConn int) (*Postgres, context.Context) {
+func InitPg(envs envs, // параметры для запуска
+	incomingCh chan interface{},
+	waitingTime,
+	numberAttemptsBDrequest,
+	numberAttemptsConnect,
+	waitingTimeConn int) (*Postgres, context.Context) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pg := &Postgres{

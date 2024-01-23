@@ -22,6 +22,9 @@ type RabbitConn struct {
 }
 
 // функция инициализирует структуру RabbitConn и делает попытки создать коннект и канал для RabbitMQ
+// url: url для подключения к RabbitMQ;
+// numAttemps: количество попыток подключения;
+// timeWait: время ожидания между попытками в секундах
 func InitRabbitConn(url string, numAttemps, timeWait int) (*RabbitConn, error) {
 	rc := &RabbitConn{
 		numAttemps: numAttemps,
@@ -65,9 +68,13 @@ func (r *RabbitConn) SetIsReadyCh(value bool) {
 
 // метод для обновления статуса коннекта
 func (r *RabbitConn) UpdataStatusConn() {
+	var isClosed bool
 
 	r.mx.Lock()
-	isClosed := r.Connector.IsClosed()
+	if r.Connector != nil {
+		isClosed = r.Connector.IsClosed()
+		// log.Infof("RabbitConn %v", isClosed)
+	}
 	r.mx.Unlock()
 
 	if isClosed {
@@ -79,9 +86,13 @@ func (r *RabbitConn) UpdataStatusConn() {
 
 // метод обновления статуса канала
 func (r *RabbitConn) UpdataStatusCh() {
+	var isClosed bool
 
 	r.mx.Lock()
-	isClosed := r.Channel.IsClosed()
+	if r.Channel != nil {
+		isClosed = r.Channel.IsClosed()
+		// log.Infof("RabbitChan %v", isClosed)
+	}
 	r.mx.Unlock()
 
 	if isClosed {
@@ -142,15 +153,17 @@ func (r *RabbitConn) connectionAttempts(numberAttempts, timeWait int) error {
 
 // метод создания коннекта RabbitMQ
 func (r *RabbitConn) createConnect() {
-	var err error
-
-	r.mx.Lock()
-	r.Connector, err = amqp.Dial(r.url)
-	r.mx.Unlock()
+	conn, err := amqp.Dial(r.url)
 
 	if err != nil {
 		log.Infof("Connect Rabbit failed: %v\n", err)
+		r.SetIsReadyConn(false)
+		return
 	}
+
+	r.mx.Lock()
+	r.Connector = conn
+	r.mx.Unlock()
 
 	r.SetIsReadyConn(true)
 	log.Info("Connect Rabbit was created")
@@ -159,11 +172,7 @@ func (r *RabbitConn) createConnect() {
 
 // метод создания канала
 func (r *RabbitConn) createChann() error {
-	var err error
-
-	r.mx.Lock()
-	r.Channel, err = r.Connector.Channel()
-	r.mx.Unlock()
+	chrb, err := r.Connector.Channel()
 
 	if err != nil {
 		log.Infof("Channel Rabbit failed: %v\n", err)
@@ -172,12 +181,14 @@ func (r *RabbitConn) createChann() error {
 	}
 
 	r.mx.Lock()
+	r.Channel = chrb
 	err = r.Channel.Qos(1, 0, false)
 	r.mx.Unlock()
 
 	if err != nil {
 		r.SetIsReadyCh(false)
 		log.Infof("Qos Rabbit failed: %v\n", err)
+		return err
 	}
 
 	r.SetIsReadyCh(true)
@@ -197,15 +208,20 @@ func (r *RabbitConn) Consume(nameQueue, nameConsumer string, args amqp.Table) (<
 	}
 
 	r.mx.Lock()
-	ch, err = r.Channel.Consume(
-		nameQueue,    // queue
-		nameConsumer, // consumer
-		false,        // auto-ack
-		false,        // exclusive
-		false,        // no-local
-		false,        // no-wait
-		args,         // args
-	)
+	if r.Channel != nil {
+		ch, err = r.Channel.Consume(
+			nameQueue,    // queue
+			nameConsumer, // consumer
+			false,        // auto-ack
+			false,        // exclusive
+			false,        // no-local
+			false,        // no-wait
+			args,         // args
+		)
+	} else {
+		err = fmt.Errorf("channel RabbitMQ is not defined")
+	}
+
 	r.mx.Unlock()
 
 	return ch, err
