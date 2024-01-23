@@ -31,8 +31,8 @@ func init() {
 
 func main() {
 	pgEnvs, rbEnvs := env.LoadEnvs()
-	rabbit := rb.InitRb(*rbEnvs)
+	rabbit := rb.InitRb(*rbEnvs, 5)
 	pg.InitPg(*pgEnvs, rabbit.GetChan())
-	rabbit.StartRb()
+	rabbit.StartRb(20, 3, 50)
 	time.Sleep(2 * time.Minute)
 }
