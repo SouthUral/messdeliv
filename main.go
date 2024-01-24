@@ -33,12 +33,24 @@ func main() {
 	defer log.Info("messDeliv finished the job")
 	pgEnvs, rbEnvs := env.LoadEnvs()
 	rbMain := rb.InitRb(*rbEnvs, 25)
-	pgMain, ctxPg := pg.InitPg(*pgEnvs, rbMain.GetChan(), 1000, 20, 30, 5)
-	ctxRb := rbMain.StartRb(20, 3, 50, 3)
+	pgMain, ctxPg := pg.InitPg(
+		*pgEnvs,
+		rbMain.GetChan(),
+		1000,
+		20,
+		30,
+		5,
+	)
+	ctxRb := rbMain.StartRb(
+		20,
+		3,
+		50,
+		3,
+	)
 	for {
 		select {
 		case <-ctxPg.Done():
-			rbMain.RabbitShutdown()
+			rbMain.RabbitShutdown(pg.PostgresShutdownError{})
 			return
 		case <-ctxRb.Done():
 			pgMain.PostgresShutdown(rb.RabbitShutdownError{})

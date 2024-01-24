@@ -31,3 +31,35 @@ type RabbitShutdownError struct {
 func (e RabbitShutdownError) Error() string {
 	return "Rabbit finished the job"
 }
+
+// Ошибка инициализации RabbitConn
+type initRabbitConnError struct {
+}
+
+func (e initRabbitConnError) Error() string {
+	return "initialization error RabbitConn"
+}
+
+// ошибка коннекта к Rabbit
+type connRabbitError struct {
+}
+
+func (e connRabbitError) Error() string {
+	return "connect Rabbit failed"
+}
+
+// закончились попытки подключения к RabbitMQ
+type connectAttemptsError struct {
+}
+
+func (e connectAttemptsError) Error() string {
+	return "the number of attempts to connect to RabbitMQ has ended"
+}
+
+// ошибка создания канала
+type createChanRabbitError struct {
+}
+
+func (e createChanRabbitError) Error() string {
+	return "error creating the RabbitMQ channel"
+}

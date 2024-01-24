@@ -18,18 +18,15 @@ type Postgres struct {
 	Offset             string
 	waitingTime        int // время ожидания между попытками запроса
 	IncomingCh         chan interface{}
-	// internalСhEvent    chan msgEvent // внутренний канал для передачи event
-	// internalСhAnswer chan
-	Conn        *pgx.Conn
-	mx          sync.RWMutex
-	isReadyConn bool   // флаг показывающий подключен ли сервис к БД
-	cancel      func() // функция закрытия контекста
+	Conn               *pgx.Conn
+	mx                 sync.RWMutex
+	isReadyConn        bool   // флаг показывающий подключен ли сервис к БД
+	cancel             func() // функция закрытия контекста
 }
 
-// Основной процесс, получает сообщения, запускает логику.
+// Метод получает сообщения и запускает горутину генерации запроса к БД requestMaker
 // ctx: общий контекст для postgres;
-// numberAttempts: количество попыток запроса к БД (5-20)
-func (p *Postgres) eventRecipient(ctx context.Context, numberAttempts int) {
+func (p *Postgres) eventRecipient(ctx context.Context) {
 	defer log.Warning("Postgres: eventRecipient has finished its work")
 	for {
 		select {
@@ -49,11 +46,8 @@ func (p *Postgres) eventRecipient(ctx context.Context, numberAttempts int) {
 	}
 }
 
-// TODO: нужно переделать под горутину
-// Метод производит запрос, если запрос был провален из-за проблемы подключения к БД то запрос повториться указанное количество раз.
-// Если запрос провалился из-за ошибки запроса то вернется ошибка.
+// Метод производит запрос в БД, если запрос провалился из-за ошибки подключения, то он будет повторяться.
 // event: интерфейс полученного сообщения;
-// numberAttempts: количество попыток отправки запроса;
 // waitingTime: время ожидания между попытками (в миллисекундах)
 func (p *Postgres) requestMaker(ctx context.Context, event msgEvent, waitingTime int) {
 	defer log.Warning("requestMaker has finished its work")
@@ -105,7 +99,6 @@ func (p *Postgres) requestMaker(ctx context.Context, event msgEvent, waitingTime
 }
 
 // Метод производит вызов процедуры в БД (процедура передается из переменной окружения).
-// Возвращает ошибку и флаг подключения к БД
 func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) error {
 	var err error
 
@@ -130,7 +123,7 @@ func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) error {
 	return err
 }
 
-// Метод возврщает последний оффсет из БД, ошибку запроса, флаг подключения к БД
+// Метод возврщает последний оффсет из БД
 func (pg *Postgres) GetOffset() (int, error) {
 	var err error
 	var offset_msg int
@@ -296,7 +289,7 @@ func InitPg(envs envs, // параметры для запуска
 
 	go pg.processConnDB(ctx, numberAttemptsConnect, waitingTimeConn)
 	time.Sleep(50 * time.Millisecond)
-	go pg.eventRecipient(ctx, numberAttemptsBDrequest)
+	go pg.eventRecipient(ctx)
 
 	return pg, ctx
 }

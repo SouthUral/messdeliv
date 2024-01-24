@@ -43,10 +43,12 @@ func (r *Rabbit) processConnRb(ctx context.Context, numberAttempts, timeSleep in
 			return
 		default:
 			if r.rabbitConn == nil {
+				// производится инициализация RabbitConn
 				rc, err := InitRabbitConn(r.url, numberAttempts, timeSleep)
 				if err != nil {
+					// ошибка инициализации RabbitConn
 					log.Error("connection error during RabbitConn initialization")
-					r.RabbitShutdown()
+					r.RabbitShutdown(err)
 					return
 				}
 				r.mx.Lock()
@@ -60,7 +62,7 @@ func (r *Rabbit) processConnRb(ctx context.Context, numberAttempts, timeSleep in
 				err := r.rabbitConn.CreateConnChan()
 				if err != nil {
 					log.Error("connection to RabbitMQ could not be restored")
-					r.RabbitShutdown()
+					r.RabbitShutdown(err)
 					return
 				}
 			}
@@ -88,7 +90,7 @@ func (r *Rabbit) controlConsumers(ctx context.Context, numberAttempts, timeWait 
 						err := r.createConsumer(ctx, numberAttempts, timeWait)
 						if err != nil {
 							log.Error("the number of attempts to create a consumer has ended")
-							r.RabbitShutdown()
+							r.RabbitShutdown(err)
 							return
 						}
 					} else {
@@ -136,6 +138,30 @@ func (r *Rabbit) createConsumer(ctx context.Context, numberAttempts, timeWait in
 	return err
 }
 
+// метод проверяет, есть ли активный Consumer, если есть, то возвращает сообщение от него
+func (r *Rabbit) getConsEvent() (msgEvent, error) {
+	var event msgEvent
+	var err error
+
+	if r.consumer != nil {
+		if r.consumer.GetStatus() {
+			select {
+			case event = <-r.consumer.chOutput:
+				return event, err
+			default:
+				err = fmt.Errorf("%w", noEventError{})
+				return event, err
+			}
+		} else {
+			err = fmt.Errorf("%w", consumerActiveError{})
+			return event, err
+		}
+	} else {
+		err = fmt.Errorf("%w", consumerNotDedineError{})
+		return event, err
+	}
+}
+
 // метод останавливает активные процессы у Consumer, и удаляет его из структуры Rabbit \\
 // после срабатывания метода, указатель на Consumer будет равен nil
 func (r *Rabbit) deleteConsumer() {
@@ -170,39 +196,13 @@ func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime, waitingErrTim
 				r.outgoingCh <- event
 				_, err := r.getResponse(event.reverceCh, r.timeWaitBD)
 				if err != nil {
-					log.Error(err)
-					r.RabbitShutdown()
+					r.RabbitShutdown(err)
 					return
 				}
 				// отправка сигнала, для разблокировки Consumer
 				event.signal()
 			}
 		}
-	}
-
-}
-
-// метод проверяет, есть ли активный Consumer, если есть, то возвращает сообщение от него
-func (r *Rabbit) getConsEvent() (msgEvent, error) {
-	var event msgEvent
-	var err error
-
-	if r.consumer != nil {
-		if r.consumer.GetStatus() {
-			select {
-			case event = <-r.consumer.chOutput:
-				return event, err
-			default:
-				err = fmt.Errorf("%w", noEventError{})
-				return event, err
-			}
-		} else {
-			err = fmt.Errorf("%w", consumerActiveError{})
-			return event, err
-		}
-	} else {
-		err = fmt.Errorf("%w", consumerNotDedineError{})
-		return event, err
 	}
 }
 
@@ -253,7 +253,8 @@ func (r *Rabbit) getResponse(ch chan interface{}, timeWait int) (answerEvent, er
 }
 
 // прекращение всех процессов Rabbit
-func (r *Rabbit) RabbitShutdown() {
+func (r *Rabbit) RabbitShutdown(err error) {
+	log.Errorf("Rabbit shutdown due to: %v", err)
 	r.cancel()
 	r.deleteConsumer()
 	if r.rabbitConn != nil {

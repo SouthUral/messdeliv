@@ -1,16 +1,7 @@
 package postgres
 
-// // функция создает ошибку типа queryError
-// func createQueryError(err error) queryError {
-// 	queryErr := queryError{
-// 		msg: err.Error(),
-// 	}
-// 	return queryErr
-// }
-
 // ошибка запроса к БД
 type queryError struct {
-	msg string
 }
 
 func (e queryError) Error() string {
@@ -39,4 +30,12 @@ type endConnectAttemptsError struct {
 
 func (e endConnectAttemptsError) Error() string {
 	return "attempts to connect to the database have ended"
+}
+
+// Экспортируемая ошибка, Postgres закончил работу
+type PostgresShutdownError struct {
+}
+
+func (e PostgresShutdownError) Error() string {
+	return "postgres has finished its work"
 }
