@@ -2,6 +2,7 @@ package rabbit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -92,7 +93,7 @@ func (r *Rabbit) controlConsumers(ctx context.Context, numberAttempts, timeWait 
 						}
 					} else {
 						if !r.consumer.GetStatus() {
-							r.consumer = nil
+							r.deleteConsumer()
 						}
 					}
 				}
@@ -121,7 +122,7 @@ func (r *Rabbit) createConsumer(ctx context.Context, numberAttempts, timeWait in
 		if err != nil {
 			return err
 		}
-		cons, err = r.rabbitConn.NewConsumer(ctx, offset, r.nameQueue, r.nameConsumer)
+		cons, err = r.rabbitConn.NewConsumer(offset, r.nameQueue, r.nameConsumer)
 		if err != nil {
 			numbeRestarts++
 			time.Sleep(time.Duration(timeWait) * time.Second)
@@ -135,11 +136,21 @@ func (r *Rabbit) createConsumer(ctx context.Context, numberAttempts, timeWait in
 	return err
 }
 
+// метод останавливает активные процессы у Consumer, и удаляет его из структуры Rabbit \\
+// после срабатывания метода, указатель на Consumer будет равен nil
+func (r *Rabbit) deleteConsumer() {
+	if r.consumer != nil {
+		r.consumer.ConsumerShutdown()
+		r.consumer = nil
+	}
+}
+
 // Процесс:
 // получает события от Consumer и отправляет на сохранение в БД.
 // ctx: общий контекст Rabbit;
-// waitingTime: время ожидания между обращениями к потребителю в миллисекундах
-func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime int) {
+// waitingTime: время ожидания между обращениями к потребителю (в миллисекундах)
+// waitingErrTime: время ожидания, если потребитель не работает или не существует (в секундах)
+func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime, waitingErrTime int) {
 	defer log.Warning("sendingMessages has finished its work")
 	log.Info("start sendingMessages")
 	for {
@@ -147,11 +158,14 @@ func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime int) {
 		case <-ctx.Done():
 			return
 		default:
-			event, err := r.getConsEvent()
-			if err != nil {
-				// log.Warning(err)
-				// небольшое ожидание
-				time.Sleep(time.Duration(waitingTime) * time.Millisecond)
+			// event, err := r.getConsEvent()
+			if event, err := r.getConsEvent(); err != nil {
+				switch {
+				case errors.Is(err, noEventError{}):
+					time.Sleep(time.Duration(waitingTime) * time.Millisecond)
+				default:
+					time.Sleep(time.Duration(waitingErrTime) * time.Second)
+				}
 			} else {
 				r.outgoingCh <- event
 				_, err := r.getResponse(event.reverceCh, r.timeWaitBD)
@@ -168,7 +182,7 @@ func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime int) {
 
 }
 
-// метод получает событие от Consumer
+// метод проверяет, есть ли активный Consumer, если есть, то возвращает сообщение от него
 func (r *Rabbit) getConsEvent() (msgEvent, error) {
 	var event msgEvent
 	var err error
@@ -179,15 +193,15 @@ func (r *Rabbit) getConsEvent() (msgEvent, error) {
 			case event = <-r.consumer.chOutput:
 				return event, err
 			default:
-				err = fmt.Errorf("the event was not received from the Consumer")
+				err = fmt.Errorf("%w", noEventError{})
 				return event, err
 			}
 		} else {
-			err = fmt.Errorf("Consumer is not active")
+			err = fmt.Errorf("%w", consumerActiveError{})
 			return event, err
 		}
 	} else {
-		err = fmt.Errorf("Consumer has not been defined yet")
+		err = fmt.Errorf("%w", consumerNotDedineError{})
 		return event, err
 	}
 }
@@ -241,6 +255,7 @@ func (r *Rabbit) getResponse(ch chan interface{}, timeWait int) (answerEvent, er
 // прекращение всех процессов Rabbit
 func (r *Rabbit) RabbitShutdown() {
 	r.cancel()
+	r.deleteConsumer()
 	if r.rabbitConn != nil {
 		r.rabbitConn.Shutdown()
 	}
@@ -264,14 +279,15 @@ func InitRb(envs envs, timeWaitBD int) *Rabbit {
 // метод стартует основные процессы Rabbit
 // numberAttempts: количество попыток;
 // timeWait: время ожидания между поптыками в секундах;
-// waitingTime: время ожидания между обращениями к потребителю в миллисекундах
-func (r *Rabbit) StartRb(numberAttempts, timeWait, waitingTime int) context.Context {
+// waitingTime: время ожидания между обращениями к потребителю (в миллисекундах)
+// waitingErrTime: время ожидания, если потребитель не работает или не существует (в секундах)
+func (r *Rabbit) StartRb(numberAttempts, timeWait, waitingTime, waitingErrTime int) context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 
 	go r.processConnRb(ctx, numberAttempts, timeWait)
 	go r.controlConsumers(ctx, numberAttempts, timeWait)
-	go r.sendingMessages(ctx, waitingTime)
+	go r.sendingMessages(ctx, waitingTime, waitingErrTime)
 
 	return ctx
 }

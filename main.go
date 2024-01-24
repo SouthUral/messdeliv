@@ -21,7 +21,7 @@ func init() {
 	log.SetOutput(os.Stdout)
 
 	// установка уровня логирования
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.DebugLevel)
 
 	// loads values from .env into the system
 	if err := godotenv.Load(".env"); err != nil {
@@ -32,16 +32,16 @@ func init() {
 func main() {
 	defer log.Info("messDeliv finished the job")
 	pgEnvs, rbEnvs := env.LoadEnvs()
-	rbMain := rb.InitRb(*rbEnvs, 20)
-	pgMain, ctxPg := pg.InitPg(*pgEnvs, rbMain.GetChan(), 500, 30, 30, 3)
-	ctxRb := rbMain.StartRb(20, 3, 50)
+	rbMain := rb.InitRb(*rbEnvs, 25)
+	pgMain, ctxPg := pg.InitPg(*pgEnvs, rbMain.GetChan(), 1000, 20, 30, 5)
+	ctxRb := rbMain.StartRb(20, 3, 50, 3)
 	for {
 		select {
 		case <-ctxPg.Done():
 			rbMain.RabbitShutdown()
 			return
 		case <-ctxRb.Done():
-			pgMain.PostgresShutdown()
+			pgMain.PostgresShutdown(rb.RabbitShutdownError{})
 			return
 		default:
 			time.Sleep(50 * time.Millisecond)

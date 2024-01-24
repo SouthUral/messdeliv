@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -17,141 +18,167 @@ type Postgres struct {
 	Offset             string
 	waitingTime        int // время ожидания между попытками запроса
 	IncomingCh         chan interface{}
-	Conn               *pgx.Conn
-	mx                 sync.RWMutex
-	isReadyConn        bool   // флаг показывающий подключен ли сервис к БД
-	cancel             func() // функция закрытия контекста
+	// internalСhEvent    chan msgEvent // внутренний канал для передачи event
+	// internalСhAnswer chan
+	Conn        *pgx.Conn
+	mx          sync.RWMutex
+	isReadyConn bool   // флаг показывающий подключен ли сервис к БД
+	cancel      func() // функция закрытия контекста
 }
 
 // Основной процесс, получает сообщения, запускает логику.
 // ctx: общий контекст для postgres;
 // numberAttempts: количество попыток запроса к БД (5-20)
-func (p *Postgres) mainProcess(ctx context.Context, numberAttempts int) {
-
-	go func() {
-		defer log.Warning("Postgres: mainProcess has finished its work")
-		for {
-			select {
-			case <-ctx.Done():
+func (p *Postgres) eventRecipient(ctx context.Context, numberAttempts int) {
+	defer log.Warning("Postgres: eventRecipient has finished its work")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-p.IncomingCh:
+			log.Info("Postgres: a message has been received")
+			event, ok := msg.(msgEvent)
+			if !ok {
+				// прекратить работу, ошибка приведения типа
+				err := typeConversionError{}
+				p.PostgresShutdown(err)
 				return
-			case msg := <-p.IncomingCh:
-				log.Info("Postgres: a message has been received")
-				event, ok := msg.(msgEvent)
-				if !ok {
-					// прекратить работу, ошибка приведения типа
-					log.Error("Postgres: type conversion error")
-					p.PostgresShutdown()
-				}
-				answer, err := p.requestMaker(event, numberAttempts, p.waitingTime)
-				if err != nil {
-					// ошибка запроса, либо закончились попытки
-					// прекратить работу
-					log.Error(err)
-					p.PostgresShutdown()
-				}
-				event.GetReverceCh() <- answer
 			}
+			go p.requestMaker(ctx, event, p.waitingTime)
 		}
-
-	}()
+	}
 }
 
+// TODO: нужно переделать под горутину
 // Метод производит запрос, если запрос был провален из-за проблемы подключения к БД то запрос повториться указанное количество раз.
 // Если запрос провалился из-за ошибки запроса то вернется ошибка.
 // event: интерфейс полученного сообщения;
 // numberAttempts: количество попыток отправки запроса;
-// waitingTime: время ожидания между попытками в миллисекундах
-func (p *Postgres) requestMaker(event msgEvent, numberAttempts, waitingTime int) (answerEvent, error) {
+// waitingTime: время ожидания между попытками (в миллисекундах)
+func (p *Postgres) requestMaker(ctx context.Context, event msgEvent, waitingTime int) {
+	defer log.Warning("requestMaker has finished its work")
 	var err error
 	answer := answerEvent{}
 
-	for i := 0; i < numberAttempts; i++ {
-		switch event.GetTypeMsg() {
-		case typeGetOffset:
-			offset, err, isConn := p.GetOffset()
-			if !isConn {
-				time.Sleep(time.Duration(waitingTime) * time.Millisecond)
-				continue
-			} else {
-				answer.offset = offset
-				return answer, err
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			switch event.GetTypeMsg() {
+			case typeGetOffset:
+				offset, err := p.GetOffset()
+				if err == nil {
+					answer.offset = offset
+					event.GetReverceCh() <- answer
+					return
+				} else {
+					if errors.Is(err, queryError{}) {
+						time.Sleep(time.Duration(waitingTime) * time.Millisecond)
+						if p.checkConn() {
+							p.PostgresShutdown(err)
+							return
+						}
+					} else {
+						time.Sleep(time.Duration(waitingTime) * time.Millisecond)
+					}
+				}
+			case typeInputMsg:
+				err = p.RequestDb(event.GetMsg(), event.GetOffset())
+				if err == nil {
+					event.GetReverceCh() <- answer
+					return
+				} else {
+					if errors.Is(err, queryError{}) {
+						time.Sleep(time.Duration(waitingTime) * time.Millisecond)
+						if p.checkConn() {
+							p.PostgresShutdown(err)
+							return
+						}
+					} else {
+						time.Sleep(time.Duration(waitingTime) * time.Millisecond)
+					}
+				}
 			}
-		case typeInputMsg:
-			err, isConn := p.RequestDb(event.GetMsg(), event.GetOffset())
-			if !isConn {
-				time.Sleep(time.Duration(waitingTime) * time.Millisecond)
-				continue
-			}
-			return answer, err
 		}
 	}
-
-	err = fmt.Errorf("Postgres: the number of attempts to send the request has been exceeded")
-	return answer, err
 }
 
 // Метод производит вызов процедуры в БД (процедура передается из переменной окружения).
 // Возвращает ошибку и флаг подключения к БД
-func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) (error, bool) {
+func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) error {
 	var err error
+
+	log.Debug("RequestDb start work")
+
 	if pg.getIsReadyConn() {
 		pg.mx.Lock()
 		_, err = pg.Conn.Exec(context.Background(), pg.recordingProcedure, msg, offset_msg)
 		pg.mx.Unlock()
 		if err != nil {
-			log.Errorf("Postgres: QueryRow failed: %v\n", err)
-			return err, true
+			err = fmt.Errorf("%w: %w", queryError{}, err)
+			log.Error(err)
+			return err
 		} else {
 			log.Info("Postgres: the message is recorded in the database")
-			return err, true
+			return err
 		}
 	}
-	return err, false
+	// если флаг isReadyConn == false
+	err = fmt.Errorf("%w", connectDBError{})
+	log.Errorf("the request was not executed: %v", err)
+	return err
 }
 
 // Метод возврщает последний оффсет из БД, ошибку запроса, флаг подключения к БД
-func (pg *Postgres) GetOffset() (int, error, bool) {
+func (pg *Postgres) GetOffset() (int, error) {
 	var err error
 	var offset_msg int
+
+	log.Debug("GetOffset start work")
+
 	if pg.getIsReadyConn() {
 		pg.mx.Lock()
 		err = pg.Conn.QueryRow(context.Background(), pg.funcGetOffset).Scan(&offset_msg)
 		pg.mx.Unlock()
 		if err != nil {
-			log.Errorf("QueryRow failed: %v\n", err)
+			err = fmt.Errorf("%w: %w", queryError{}, err)
+			log.Error(err)
 		} else {
 			log.Infof("the request GetOffset was successfully, offset : %d", offset_msg)
 		}
-		return offset_msg, err, true
+		return offset_msg, err
 	}
-	return offset_msg, err, false
+	err = fmt.Errorf("%w", connectDBError{})
+	log.Errorf("the request was not executed: %v", err)
+	return offset_msg, err
 }
 
 // процесс контроля за подключением к БД.
 // Параметры: количество попыток подключения, время ожидания между проверками состояния
 func (p *Postgres) processConnDB(ctx context.Context, numberAttempts, timeSleep int) {
 
-	go func() {
-		defer log.Warning("processConnDB has finished its work")
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				if p.getIsReadyConn() {
-					time.Sleep(time.Duration(timeSleep) * time.Second)
-					p.checkConn()
-				} else {
-					if !p.connection(numberAttempts) {
-						// все попытки подключения провалены
-						// завершение работы
-						p.PostgresShutdown()
-						return
-					}
+	defer log.Warning("processConnDB has finished its work")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			if p.getIsReadyConn() {
+				time.Sleep(time.Duration(timeSleep) * time.Second)
+				p.checkConn()
+			} else {
+				if !p.connection(numberAttempts) {
+					// все попытки подключения провалены
+					// завершение работы
+					err := endConnectAttemptsError{}
+					p.PostgresShutdown(err)
+					return
 				}
 			}
 		}
-	}()
+	}
+
 }
 
 // цикл переподключения
@@ -180,25 +207,26 @@ func (pg *Postgres) connPg() {
 }
 
 // метод для проверки подключения к БД
-func (pg *Postgres) checkConn() {
-	defer pg.mx.Unlock()
+func (pg *Postgres) checkConn() bool {
 	var err error
 
 	ctxCheck, _ := context.WithTimeout(context.Background(), 5*time.Second)
-	pg.mx.Lock()
 
+	pg.mx.Lock()
 	if pg.Conn != nil {
 		err = pg.Conn.Ping(ctxCheck)
 	} else {
 		err = fmt.Errorf("the connector is not defined")
 	}
+	pg.mx.Unlock()
 
 	if err != nil {
 		log.Errorf("Database connection error: %v\n", err)
-		pg.isReadyConn = false
-		return
+		pg.setIsReadyConn(false)
+		return false
 	}
-	pg.isReadyConn = true
+	pg.setIsReadyConn(true)
+	return true
 }
 
 // потокобезопасно возвращает флаг isReadyConn, который сигнализирует о подключении к БД
@@ -206,7 +234,7 @@ func (pg *Postgres) getIsReadyConn() bool {
 	defer pg.mx.RUnlock()
 	pg.mx.RLock()
 	res := pg.isReadyConn
-	connNotnil := pg.Conn != nil
+	connNotnil := (pg.Conn != nil)
 	return res && connNotnil
 }
 
@@ -235,7 +263,8 @@ func (p *Postgres) CloseConn() {
 }
 
 // метод для прекращения работы Postgres
-func (p *Postgres) PostgresShutdown() {
+func (p *Postgres) PostgresShutdown(err error) {
+	log.Errorf("Postgres shutdown due to: %v", err)
 	p.cancel()
 	time.Sleep(50 * time.Millisecond)
 	p.CloseConn()
@@ -265,9 +294,9 @@ func InitPg(envs envs, // параметры для запуска
 		waitingTime:        waitingTime,
 	}
 
-	pg.processConnDB(ctx, numberAttemptsConnect, waitingTimeConn)
+	go pg.processConnDB(ctx, numberAttemptsConnect, waitingTimeConn)
 	time.Sleep(50 * time.Millisecond)
-	pg.mainProcess(ctx, numberAttemptsBDrequest)
+	go pg.eventRecipient(ctx, numberAttemptsBDrequest)
 
 	return pg, ctx
 }

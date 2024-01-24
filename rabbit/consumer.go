@@ -15,6 +15,7 @@ type Consumer struct {
 	mx       sync.RWMutex
 	works    bool
 	offset   int
+	cansel   func() // функция для отмены контекста
 }
 
 // возвращает статус работы Consumer
@@ -25,7 +26,7 @@ func (c *Consumer) GetStatus() bool {
 }
 
 // установка статуса работы Consumer
-func (c *Consumer) SetStatus(status bool) {
+func (c *Consumer) setStatus(status bool) {
 	defer c.mx.Unlock()
 	c.mx.Lock()
 	c.works = status
@@ -45,11 +46,11 @@ func (c *Consumer) getArgs() amqp.Table {
 }
 
 // процесс консъюминга
-func (c *Consumer) ProcessCons(ctx context.Context) {
+func (c *Consumer) processCons(ctx context.Context) {
 	go func() {
 		defer log.Warning("the consumer stopped working")
 		defer close(c.chOutput)
-		defer c.SetStatus(false)
+		defer c.setStatus(false)
 
 		for msg := range c.chRb {
 			ctxEvent, cancel := context.WithCancel(context.Background())
@@ -77,14 +78,23 @@ func (c *Consumer) ProcessCons(ctx context.Context) {
 	}()
 }
 
+// Закрывает активные горутины Consumer
+func (c *Consumer) ConsumerShutdown() {
+	c.cansel()
+	c.setStatus(false)
+}
+
 // Метод создает и запускает consumer
 // Возвращает: канал, ошибку
-func (r *RabbitConn) NewConsumer(ctx context.Context, streamOffset int, nameQueue, nameConsumer string) (*Consumer, error) {
+func (r *RabbitConn) NewConsumer(streamOffset int, nameQueue, nameConsumer string) (*Consumer, error) {
 	var err error
+
+	ctx, cancel := context.WithCancel(context.Background())
 
 	cons := &Consumer{
 		offset:   streamOffset,
 		chOutput: make(chan msgEvent),
+		cansel:   cancel,
 	}
 
 	if !r.CheckStatusReady() {
@@ -99,7 +109,7 @@ func (r *RabbitConn) NewConsumer(ctx context.Context, streamOffset int, nameQueu
 		return cons, err
 	}
 
-	cons.SetStatus(true)
-	cons.ProcessCons(ctx)
+	cons.setStatus(true)
+	cons.processCons(ctx)
 	return cons, err
 }
