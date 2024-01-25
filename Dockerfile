@@ -2,9 +2,11 @@ FROM spbgit.polymetal.ru:5005/polyna/docker/images/asd-golang:1.2
 
 WORKDIR /usr/local/go/src/messdeliv
 
-COPY ["go.mod", "go.sum", "./"]
+RUN export GOROOT=/usr/local/go/src/messdeliv
 
-RUN go mod download
+# COPY ["go.mod", "go.sum", "./"]
+
+# RUN go mod download
 
 COPY . .
 
