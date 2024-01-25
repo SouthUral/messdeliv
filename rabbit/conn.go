@@ -1,7 +1,6 @@
 package rabbit
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -206,26 +205,50 @@ func (r *RabbitConn) createChann() error {
 	return err
 }
 
-// Метод создает и запускает consumer
+// Метод создает и запускает consumer, для внешних пользователей
 func (r *RabbitConn) NewConsumer(streamOffset int, nameQueue, nameConsumer string) (*Consumer, error) {
 	var err error
+	var cons *Consumer
+	var chRb <-chan amqp.Delivery
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	cons := &Consumer{
-		offset:   streamOffset,
-		chOutput: make(chan msgEvent),
-		cansel:   cancel,
+	if streamOffset > 0 {
+		// если streamOffset > 0 нужно проверить, offset из БД больше чем offset из раббит
+		chRb, err = r.Consume(nameQueue, nameConsumer, amqp.Table{"x-stream-offset": "last"})
+		if err != nil {
+			return cons, err
+		}
+		cons = InitConsumer(chRb)
+		msg := cons.GetMessage()
+		cons.ConsumerShutdown()
+		if streamOffset > int(msg.offset) {
+			// если offset из БД больше, значит очередь в Rabbit была сброшена и нужно начать читать сообщения с начала очереди
+			chRb, err = r.Consume(nameQueue, nameConsumer, amqp.Table{"x-stream-offset": "first"})
+			if err != nil {
+				return cons, err
+			}
+			cons = InitConsumer(chRb)
+			log.Info("the consumer is launched from offset: first")
+			return cons, err
+		} else {
+			// если offset из Rabbit больше, значит очередь в Rabbit в порядке, и можно читать сообщения с offset+1 БД
+			streamOffset++
+			chRb, err = r.Consume(nameQueue, nameConsumer, amqp.Table{"x-stream-offset": streamOffset})
+			if err != nil {
+				return cons, err
+			}
+			cons = InitConsumer(chRb)
+			log.Infof("the consumer is launched from offset: %d", streamOffset)
+			return cons, err
+		}
 	}
-
-	cons.chRb, err = r.Consume(nameQueue, nameConsumer, cons.getArgs())
+	// если streamOffset == 0, значит в БД нет записей, или offset затерт
+	chRb, err = r.Consume(nameQueue, nameConsumer, amqp.Table{"x-stream-offset": "last"})
 	if err != nil {
 		return cons, err
 	}
 
-	log.Info("new consumer inited")
-	cons.setStatus(true)
-	go cons.processCons(ctx)
+	cons = InitConsumer(chRb)
+	log.Infof("the consumer is launched from offset: %s", "last")
 	return cons, err
 }
 
