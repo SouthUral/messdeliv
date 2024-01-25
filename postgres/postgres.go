@@ -33,7 +33,7 @@ func (p *Postgres) eventRecipient(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case msg := <-p.IncomingCh:
-			log.Info("Postgres: a message has been received")
+			log.Debug("Postgres: a message has been received")
 			event, ok := msg.(msgEvent)
 			if !ok {
 				// прекратить работу, ошибка приведения типа
@@ -50,7 +50,7 @@ func (p *Postgres) eventRecipient(ctx context.Context) {
 // event: интерфейс полученного сообщения;
 // waitingTime: время ожидания между попытками (в миллисекундах)
 func (p *Postgres) requestMaker(ctx context.Context, event msgEvent, waitingTime int) {
-	defer log.Warning("requestMaker has finished its work")
+	defer log.Debug("requestMaker has finished its work")
 	var err error
 	answer := answerEvent{}
 

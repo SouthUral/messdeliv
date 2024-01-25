@@ -325,30 +325,32 @@ func (r *Rabbit) RabbitShutdown(err error) {
 
 // Функция создания структуры Rabbit
 // envs: парметры необходимые для запуска;
-// timeWaitBD: время ожидания ответа от БД, рекомендуется поставить 5-30 секунд
-func InitRb(envs envs, timeWaitBD int) *Rabbit {
+func InitRb(envs envs) *Rabbit {
 	rb := &Rabbit{
 		url:        envs.GetUrl(),
 		nameQueue:  envs.GetNameQueue(),
 		outgoingCh: make(chan interface{}, 5),
-		timeWaitBD: timeWaitBD,
 	}
 
 	return rb
 }
 
-// метод стартует основные процессы Rabbit
-// numberAttempts: количество попыток;
-// timeWait: время ожидания между поптыками в секундах;
-// waitingTime: время ожидания между обращениями к потребителю (в миллисекундах)
-// waitingErrTime: время ожидания, если потребитель не работает или не существует (в секундах)
-func (r *Rabbit) StartRb(numberAttempts, timeWait, waitingTime, waitingErrTime int) context.Context {
+// метод стартует основные процессы Rabbit//
+// numberAttemptsReonnect: количество попыток реконнекта к RabbitMQ;
+// numberAttemptsCreateConsumer: количество попыток создать потребителя;
+// timeWaitReconnect: время ожидания между реконнектами к RabbitMQ (секунды);
+// timeWaitCheckConsumer: время ожидания между проверками состояния потребителя (секунды);
+// waitingTimeMess: ожидание между проверками сообщения из очереди RabbitMQ (миллисекунды);
+// waitingErrTime: ожидание сообщения из очереди в случае возникновения ошибки (секунды);
+// timeWaitBD: время ожидания ответа от БД, рекомендуется поставить 5-30 секунд (секунды);
+func (r *Rabbit) StartRb(numberAttemptsReonnect, numberAttemptsCreateConsumer, timeWaitReconnect, timeWaitCheckConsumer, waitingTimeMess, waitingErrTime, timeWaitBD int) context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
+	r.timeWaitBD = timeWaitBD
 
-	go r.processConnRb(ctx, numberAttempts, timeWait)
-	go r.controlConsumers(ctx, numberAttempts, timeWait)
-	go r.sendingMessages(ctx, waitingTime, waitingErrTime)
+	go r.processConnRb(ctx, numberAttemptsReonnect, timeWaitReconnect)
+	go r.controlConsumers(ctx, numberAttemptsCreateConsumer, timeWaitCheckConsumer)
+	go r.sendingMessages(ctx, waitingTimeMess, waitingErrTime)
 
 	return ctx
 }
