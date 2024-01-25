@@ -6,9 +6,9 @@ import (
 
 	"github.com/joho/godotenv"
 
-	env "service/env"
-	pg "service/postgres"
-	rb "service/rabbit"
+	env "/src/service/env"
+	pg "/src/service/postgres"
+	rb "/src/service/rabbit"
 
 	log "github.com/sirupsen/logrus"
 )
