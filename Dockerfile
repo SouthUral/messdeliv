@@ -1,17 +1,15 @@
 FROM spbgit.polymetal.ru:5005/polyna/docker/images/asd-golang:1.2
 
-WORKDIR /usr/local/go/src/messdeliv
+WORKDIR $GOPATH/src/service/
 
-# RUN export GOROOT=/usr/local/go/src/messdeliv
+# COPY ["go.mod", "go.sum", "./"]
 
-COPY ["go.mod", "go.sum", "./"]
-
-RUN go mod download
+# RUN go mod download
 
 COPY . .
 
 RUN ls
 
-RUN go build -o /usr/local/go/src/messdeliv main.go
+RUN go build -o /go/src/service/messdeliv main.go
 
 USER asd:asd
