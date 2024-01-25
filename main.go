@@ -6,9 +6,9 @@ import (
 
 	"github.com/joho/godotenv"
 
-	env "usr/local/go/src/messdeliv/env"
-	pg "usr/local/go/src/messdeliv/postgres"
-	rb "usr/local/go/src/messdeliv/rabbit"
+	env "messdeliv/env"
+	pg "messdeliv/postgres"
+	rb "messdeliv/rabbit"
 
 	log "github.com/sirupsen/logrus"
 )
