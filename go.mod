@@ -1,4 +1,4 @@
-module github.com/messdeliv
+module messdeliv
 
 go 1.21
 
