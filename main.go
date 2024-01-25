@@ -21,7 +21,7 @@ func init() {
 	log.SetOutput(os.Stdout)
 
 	// установка уровня логирования
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.InfoLevel)
 
 	// loads values from .env into the system
 	if err := godotenv.Load(".env"); err != nil {
@@ -36,10 +36,10 @@ func main() {
 	pgMain, ctxPg := pg.InitPg(
 		*pgEnvs,
 		rbMain.GetChan(),
-		1000,
-		20,
-		30,
-		5,
+		1000, // время ожидания между попытками запроса к БД (в миллисекундах)
+		20,   // количество попыток запроса к БД
+		30,   // количество попыток переподключения к БД
+		5,    // время между попытками переподключения (в секундах)
 	)
 	ctxRb := rbMain.StartRb(
 		20,

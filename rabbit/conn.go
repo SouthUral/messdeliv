@@ -1,6 +1,7 @@
 package rabbit
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -94,7 +95,6 @@ func (r *RabbitConn) UpdataStatusCh() {
 	r.mx.Lock()
 	if r.Channel != nil {
 		isClosed = r.Channel.IsClosed()
-		// log.Infof("RabbitChan %v", isClosed)
 	}
 	r.mx.Unlock()
 
@@ -106,8 +106,8 @@ func (r *RabbitConn) UpdataStatusCh() {
 }
 
 // метод обновляет статусы коннекта и канала.
-// возвращает true если все статусы true, иначе false
-func (r *RabbitConn) CheckStatusReady() bool {
+// Возвращает ошибку если есть проблемы
+func (r *RabbitConn) CheckStatusReady() error {
 	r.UpdataStatusConn()
 	r.UpdataStatusCh()
 
@@ -116,8 +116,12 @@ func (r *RabbitConn) CheckStatusReady() bool {
 
 // метод проверки статуса подключения к RabbitMQ без обновления статусов
 // возвращает true если все статусы true, иначе false
-func (r *RabbitConn) GetStatus() bool {
-	return r.GetIsReadyConn() && r.GetIsReadyCh()
+func (r *RabbitConn) GetStatus() error {
+	var err error
+	if !(r.GetIsReadyConn() && r.GetIsReadyCh()) {
+		err = connRabbitNotReadyError{}
+	}
+	return err
 }
 
 // метод создает подключение к RabbitMQ и создает канал
@@ -202,34 +206,81 @@ func (r *RabbitConn) createChann() error {
 	return err
 }
 
+// Метод создает и запускает consumer
+func (r *RabbitConn) NewConsumer(streamOffset int, nameQueue, nameConsumer string) (*Consumer, error) {
+	var err error
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cons := &Consumer{
+		offset:   streamOffset,
+		chOutput: make(chan msgEvent),
+		cansel:   cancel,
+	}
+
+	cons.chRb, err = r.Consume(nameQueue, nameConsumer, cons.getArgs())
+	if err != nil {
+		return cons, err
+	}
+
+	log.Info("new consumer inited")
+	cons.setStatus(true)
+	go cons.processCons(ctx)
+	return cons, err
+}
+
 // метод создает потребителя
 func (r *RabbitConn) Consume(nameQueue, nameConsumer string, args amqp.Table) (<-chan amqp.Delivery, error) {
 	var err error
 	var ch <-chan amqp.Delivery
 
-	if !r.CheckStatusReady() {
-		err = fmt.Errorf("the connection to Rabbit is not ready to create a consumer")
+	if err = r.CheckStatusReady(); err != nil {
+		err = fmt.Errorf("%w: %w", consumCreateError{}, err)
+		return ch, err
+	}
+
+	if err = r.checkChanel(); err != nil {
+		err = fmt.Errorf("%w: %w", consumCreateError{}, err)
 		return ch, err
 	}
 
 	r.mx.Lock()
-	if r.Channel != nil {
-		ch, err = r.Channel.Consume(
-			nameQueue,    // queue
-			nameConsumer, // consumer
-			false,        // auto-ack
-			false,        // exclusive
-			false,        // no-local
-			false,        // no-wait
-			args,         // args
-		)
-	} else {
-		err = fmt.Errorf("channel RabbitMQ is not defined")
-	}
-
+	ch, err = r.Channel.Consume(
+		nameQueue,    // queue
+		nameConsumer, // consumer
+		false,        // auto-ack
+		false,        // exclusive
+		false,        // no-local
+		false,        // no-wait
+		args,         // args
+	)
 	r.mx.Unlock()
 
+	if err != nil {
+		err = fmt.Errorf("%w: %w", consumCreateError{}, err)
+	}
 	return ch, err
+}
+
+// метод  проверят, определен ли канал и не закарыт ли он
+func (r *RabbitConn) checkChanel() error {
+	var err error
+
+	r.mx.RLock()
+	if r.Channel == nil {
+		err = chanRabbitNotDefineError{}
+		return err
+	}
+	r.mx.RUnlock()
+
+	r.mx.Lock()
+	if r.Channel.IsClosed() {
+		err = chanRabbitIsClosedError{}
+		return err
+	}
+	r.mx.Unlock()
+
+	return err
 }
 
 // метод закрытия канала и коннекта rabbitMQ

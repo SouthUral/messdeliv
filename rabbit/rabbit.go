@@ -10,10 +10,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// func init() {
-// 	log.FieldKeyFile := "rabbit"
-// }
-
 type Rabbit struct {
 	url          string
 	nameQueue    string
@@ -30,6 +26,68 @@ func (r *Rabbit) GetChan() chan interface{} {
 	return r.outgoingCh
 }
 
+// возвращает ссылку на Consumer или ошибку
+func (r *Rabbit) getConsumer() (*Consumer, error) {
+	return r.consumer, r.checkConsumer()
+}
+
+// метод проверят определен и активен ли Consumer
+func (r *Rabbit) checkConsumer() error {
+	var err error
+
+	// если consumer не определен
+	if r.consumer == nil {
+		err = fmt.Errorf("%w", consumerNotDedineError{})
+		return err
+	}
+
+	// если consumer не активен
+	if !r.consumer.GetStatus() {
+		err = consumerActiveError{}
+		return err
+	}
+
+	return err
+}
+
+// возвращает ссылку на RabbitConn или ошибку
+func (r *Rabbit) getRabbitConn() (*RabbitConn, error) {
+	return r.rabbitConn, r.checkRabbitConn()
+}
+
+// Проверяет определен и активен ли RabbitConn
+func (r *Rabbit) checkRabbitConn() error {
+	var err error
+
+	if r.rabbitConn == nil {
+		err = rabbitConnNotDefineError{}
+		return err
+	}
+
+	if err = r.rabbitConn.CheckStatusReady(); err != nil {
+		return err
+	}
+
+	return err
+}
+
+func (r *Rabbit) initRabbitConn(numberAttempts, timeSleep int) error {
+	var err error
+	var rc *RabbitConn
+
+	rc, err = InitRabbitConn(r.url, numberAttempts, timeSleep)
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	r.mx.Lock()
+	r.rabbitConn = rc
+	r.mx.Unlock()
+
+	return err
+}
+
 // Процесс мониторинга и переподключения коннекта RabbitMQ.
 // ctx: общий контекст Rabbit;
 // numberAttempts: количество попыток переподключения;
@@ -42,23 +100,15 @@ func (r *Rabbit) processConnRb(ctx context.Context, numberAttempts, timeSleep in
 		case <-ctx.Done():
 			return
 		default:
-			if r.rabbitConn == nil {
-				// производится инициализация RabbitConn
-				rc, err := InitRabbitConn(r.url, numberAttempts, timeSleep)
+			err := r.checkRabbitConn()
+			switch {
+			case errors.Is(err, rabbitConnNotDefineError{}):
+				err := r.initRabbitConn(numberAttempts, timeSleep)
 				if err != nil {
-					// ошибка инициализации RabbitConn
-					log.Error("connection error during RabbitConn initialization")
 					r.RabbitShutdown(err)
 					return
 				}
-				r.mx.Lock()
-				r.rabbitConn = rc
-				r.mx.Unlock()
-			}
-
-			if r.rabbitConn.CheckStatusReady() {
-				time.Sleep(time.Duration(timeSleep) * time.Second)
-			} else {
+			case errors.Is(err, connRabbitNotReadyError{}):
 				err := r.rabbitConn.CreateConnChan()
 				if err != nil {
 					log.Error("connection to RabbitMQ could not be restored")
@@ -66,6 +116,7 @@ func (r *Rabbit) processConnRb(ctx context.Context, numberAttempts, timeSleep in
 					return
 				}
 			}
+			time.Sleep(time.Duration(timeSleep) * time.Second)
 		}
 	}
 }
@@ -84,22 +135,27 @@ func (r *Rabbit) controlConsumers(ctx context.Context, numberAttempts, timeWait 
 		case <-ctx.Done():
 			return
 		default:
-			if r.rabbitConn != nil {
-				if r.rabbitConn.GetStatus() {
-					if r.consumer == nil {
-						err := r.createConsumer(ctx, numberAttempts, timeWait)
-						if err != nil {
-							log.Error("the number of attempts to create a consumer has ended")
-							r.RabbitShutdown(err)
-							return
-						}
-					} else {
-						if !r.consumer.GetStatus() {
-							r.deleteConsumer()
-						}
-					}
-				}
+			errConn := r.checkRabbitConn()
+			if errConn != nil {
+				r.deleteConsumer()
+				time.Sleep(time.Duration(timeWait) * time.Second)
+				continue
 			}
+
+			errCons := r.checkConsumer()
+			switch {
+			case errors.Is(errCons, consumerNotDedineError{}):
+				log.Error(errCons)
+				err := r.createConsumer(ctx, numberAttempts, timeWait)
+				if err != nil {
+					log.Error("the number of attempts to create a consumer has ended")
+					r.RabbitShutdown(err)
+					return
+				}
+			case errors.Is(errCons, consumerActiveError{}):
+				r.deleteConsumer()
+			}
+
 			time.Sleep(time.Duration(timeWait) * time.Second)
 		}
 	}
@@ -120,18 +176,25 @@ func (r *Rabbit) createConsumer(ctx context.Context, numberAttempts, timeWait in
 	var offset int
 
 	for numbeRestarts < numberAttempts {
-		offset, err = r.getStreamOffset()
-		if err != nil {
+		select {
+		case <-ctx.Done():
 			return err
-		}
-		cons, err = r.rabbitConn.NewConsumer(offset, r.nameQueue, r.nameConsumer)
-		if err != nil {
-			numbeRestarts++
-			time.Sleep(time.Duration(timeWait) * time.Second)
-			continue
-		} else {
-			r.consumer = cons
-			return err
+		default:
+			offset, err = r.getStreamOffset()
+			if err != nil {
+				return err
+			}
+			cons, err = r.rabbitConn.NewConsumer(offset, r.nameQueue, r.nameConsumer)
+			if err != nil {
+				numbeRestarts++
+				time.Sleep(time.Duration(timeWait) * time.Second)
+				continue
+			} else {
+				r.mx.Lock()
+				r.consumer = cons
+				r.mx.Unlock()
+				return err
+			}
 		}
 	}
 
@@ -142,22 +205,18 @@ func (r *Rabbit) createConsumer(ctx context.Context, numberAttempts, timeWait in
 func (r *Rabbit) getConsEvent() (msgEvent, error) {
 	var event msgEvent
 	var err error
+	var cons *Consumer
 
-	if r.consumer != nil {
-		if r.consumer.GetStatus() {
-			select {
-			case event = <-r.consumer.chOutput:
-				return event, err
-			default:
-				err = fmt.Errorf("%w", noEventError{})
-				return event, err
-			}
-		} else {
-			err = fmt.Errorf("%w", consumerActiveError{})
-			return event, err
-		}
-	} else {
-		err = fmt.Errorf("%w", consumerNotDedineError{})
+	cons, err = r.getConsumer()
+	if err != nil {
+		return event, err
+	}
+
+	select {
+	case event = <-cons.GetChannal():
+		return event, err
+	default:
+		err = noEventError{}
 		return event, err
 	}
 }
@@ -168,6 +227,7 @@ func (r *Rabbit) deleteConsumer() {
 	if r.consumer != nil {
 		r.consumer.ConsumerShutdown()
 		r.consumer = nil
+		log.Info("consumer is deleted")
 	}
 }
 
@@ -184,7 +244,6 @@ func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime, waitingErrTim
 		case <-ctx.Done():
 			return
 		default:
-			// event, err := r.getConsEvent()
 			if event, err := r.getConsEvent(); err != nil {
 				switch {
 				case errors.Is(err, noEventError{}):
@@ -219,14 +278,15 @@ func (r *Rabbit) getStreamOffset() (int, error) {
 	r.outgoingCh <- event
 	answer, err := r.getResponse(revCh, r.timeWaitBD)
 	if err != nil {
-		err = fmt.Errorf("error getting offset %v", err)
+		err = fmt.Errorf("%w: %w", gettingOffsetError{}, err)
 		log.Error(err)
 		return offset, err
 	}
 
-	if answer.GetOffset() > 0 {
-		offset = answer.GetOffset() + 1
-	}
+	// if answer.GetOffset() > 0 {
+	// 	offset = answer.GetOffset() + 1
+	// }
+	offset = answer.GetOffset()
 
 	return offset, err
 }

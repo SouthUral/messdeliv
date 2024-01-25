@@ -8,6 +8,14 @@ func (e noEventError) Error() string {
 	return "the event was not received from the consumer"
 }
 
+// ошибка создания потребителя
+type consumCreateError struct {
+}
+
+func (e consumCreateError) Error() string {
+	return "the consumer is not created"
+}
+
 // ошибка, если Consumer не активен
 type consumerActiveError struct {
 }
@@ -32,12 +40,30 @@ func (e RabbitShutdownError) Error() string {
 	return "Rabbit finished the job"
 }
 
+// ошибки связанные с rabbitConn{}
+
+// RabbitConn не определен
+type rabbitConnNotDefineError struct {
+}
+
+func (e rabbitConnNotDefineError) Error() string {
+	return "rabbitConn is not define"
+}
+
 // Ошибка инициализации RabbitConn
 type initRabbitConnError struct {
 }
 
 func (e initRabbitConnError) Error() string {
 	return "initialization error RabbitConn"
+}
+
+// коннект к RabbitMQ не готов
+type connRabbitNotReadyError struct {
+}
+
+func (e connRabbitNotReadyError) Error() string {
+	return "connect RabbitMQ is not ready"
 }
 
 // ошибка коннекта к Rabbit
@@ -56,10 +82,34 @@ func (e connectAttemptsError) Error() string {
 	return "the number of attempts to connect to RabbitMQ has ended"
 }
 
+// канал RabbitMQ не определен
+type chanRabbitNotDefineError struct {
+}
+
+func (e chanRabbitNotDefineError) Error() string {
+	return "the RabbitMQ channel is not defined"
+}
+
+// канал RabbitMQ закрыт
+type chanRabbitIsClosedError struct {
+}
+
+func (e chanRabbitIsClosedError) Error() string {
+	return "the RabbitMQ channel is closed"
+}
+
 // ошибка создания канала
 type createChanRabbitError struct {
 }
 
 func (e createChanRabbitError) Error() string {
 	return "error creating the RabbitMQ channel"
+}
+
+// не получилось получить offset из БД
+type gettingOffsetError struct {
+}
+
+func (e gettingOffsetError) Error() string {
+	return "error getting offset from DB"
 }

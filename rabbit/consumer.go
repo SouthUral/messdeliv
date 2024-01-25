@@ -2,7 +2,6 @@ package rabbit
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -22,7 +21,13 @@ type Consumer struct {
 func (c *Consumer) GetStatus() bool {
 	defer c.mx.RUnlock()
 	c.mx.RLock()
-	return c.works
+	status := c.works
+	return status
+}
+
+// возвращает исходящий от Consumer канал
+func (c *Consumer) GetChannal() chan msgEvent {
+	return c.chOutput
 }
 
 // установка статуса работы Consumer
@@ -47,69 +52,37 @@ func (c *Consumer) getArgs() amqp.Table {
 
 // процесс консъюминга
 func (c *Consumer) processCons(ctx context.Context) {
-	go func() {
-		defer log.Warning("the consumer stopped working")
-		defer close(c.chOutput)
-		defer c.setStatus(false)
+	defer log.Warning("the consumer stopped working")
+	defer close(c.chOutput)
+	defer c.setStatus(false)
 
-		for msg := range c.chRb {
-			ctxEvent, cancel := context.WithCancel(context.Background())
-			event := msgEvent{
-				signal:    cancel,
-				typeEvent: typeInputMsg,
-				reverceCh: make(chan interface{}),
-				message:   msg.Body,
-				offset:    msg.Headers["x-stream-offset"].(int64),
-			}
-
-			c.chOutput <- event
-
-			select {
-			case <-ctx.Done():
-				// прекращение работы
-				return
-			case <-ctxEvent.Done():
-				// ожидание ответа
-				// продолжение работы
-				msg.Ack(true)
-			}
-
+	for msg := range c.chRb {
+		ctxEvent, cancel := context.WithCancel(context.Background())
+		event := msgEvent{
+			signal:    cancel,
+			typeEvent: typeInputMsg,
+			reverceCh: make(chan interface{}),
+			message:   msg.Body,
+			offset:    msg.Headers["x-stream-offset"].(int64),
 		}
-	}()
+
+		c.chOutput <- event
+
+		select {
+		case <-ctx.Done():
+			// прекращение работы
+			return
+		case <-ctxEvent.Done():
+			// ожидание ответа
+			// продолжение работы
+			msg.Ack(true)
+		}
+	}
+
 }
 
 // Закрывает активные горутины Consumer
 func (c *Consumer) ConsumerShutdown() {
 	c.cansel()
 	c.setStatus(false)
-}
-
-// Метод создает и запускает consumer
-// Возвращает: канал, ошибку
-func (r *RabbitConn) NewConsumer(streamOffset int, nameQueue, nameConsumer string) (*Consumer, error) {
-	var err error
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	cons := &Consumer{
-		offset:   streamOffset,
-		chOutput: make(chan msgEvent),
-		cansel:   cancel,
-	}
-
-	if !r.CheckStatusReady() {
-		err = fmt.Errorf("the connection or the RabbitMQ channel is not ready")
-		log.Error(err)
-		return cons, err
-	}
-
-	cons.chRb, err = r.Consume(nameQueue, nameConsumer, cons.getArgs())
-	if err != nil {
-		log.Error(err)
-		return cons, err
-	}
-
-	cons.setStatus(true)
-	cons.processCons(ctx)
-	return cons, err
 }
