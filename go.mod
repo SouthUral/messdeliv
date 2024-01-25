@@ -1,4 +1,4 @@
-module service
+module messdeliv
 
 go 1.21
 
