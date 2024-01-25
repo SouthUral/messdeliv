@@ -1,4 +1,4 @@
-module messdeliv
+module usr/local/go/src/messdeliv
 
 go 1.21
 

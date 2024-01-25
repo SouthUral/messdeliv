@@ -4,9 +4,9 @@ WORKDIR /usr/local/go/src/messdeliv
 
 RUN export GOROOT=/usr/local/go/src/messdeliv
 
-# COPY ["go.mod", "go.sum", "./"]
+COPY ["go.mod", "go.sum", "./"]
 
-# RUN go mod download
+RUN go mod download
 
 COPY . .
 
