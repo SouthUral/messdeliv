@@ -42,7 +42,7 @@ func (p *Postgres) eventRecipient(ctx context.Context) {
 				p.PostgresShutdown(err)
 				return
 			}
-			go p.requestMaker(ctx, event, p.waitingTime)
+			p.requestMaker(ctx, event, p.waitingTime)
 		}
 	}
 }
@@ -115,7 +115,7 @@ func (pg *Postgres) RequestDb(msg []byte, offset_msg int64) error {
 			log.Error(err)
 			return err
 		} else {
-			log.Info("Postgres: the message is recorded in the database")
+			log.Infof("Postgres: the message is recorded in the database with offset %d", offset_msg)
 			return err
 		}
 	}

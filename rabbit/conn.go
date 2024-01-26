@@ -36,6 +36,8 @@ func InitRabbitConn(url string, numAttemps, timeWait int) (*RabbitConn, error) {
 	err := rc.CreateConnChan()
 	if err != nil {
 		err = fmt.Errorf("%w: %w", initRabbitConnError{}, err)
+	} else {
+		log.Info("Created RabbitConn")
 	}
 
 	return rc, err
@@ -147,34 +149,41 @@ func (r *RabbitConn) connectionAttempts(numberAttempts, timeWait int) error {
 
 	for i := 0; i < numberAttempts; i++ {
 		if !r.GetIsReadyConn() {
-			r.createConnect()
+			err = r.createConnect()
+			if err != nil {
+				time.Sleep(time.Duration(timeWait) * time.Second)
+				continue
+			} else {
+				return err
+			}
 		} else {
 			return err
 		}
-		time.Sleep(time.Duration(timeWait) * time.Second)
 	}
 	err = connectAttemptsError{}
 	return err
 }
 
 // метод создания коннекта RabbitMQ
-func (r *RabbitConn) createConnect() {
-	// var err error
-	// var conn *amqp.Connection
+func (r *RabbitConn) createConnect() error {
+	var err error
+	var conn *amqp.Connection
 
-	conn, err := amqp.Dial(r.url)
+	conn, err = amqp.Dial(r.url)
 
 	if err != nil {
 		err = fmt.Errorf("%w: %w", connRabbitError{}, err)
 		log.Error(err)
 		r.SetIsReadyConn(false)
-	} else {
-		r.mx.Lock()
-		r.Connector = conn
-		r.mx.Unlock()
-
-		r.SetIsReadyConn(true)
+		return err
 	}
+	r.mx.Lock()
+	r.Connector = conn
+	r.mx.Unlock()
+
+	r.SetIsReadyConn(true)
+
+	return err
 }
 
 // метод создания канала
