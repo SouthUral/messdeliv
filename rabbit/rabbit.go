@@ -207,20 +207,14 @@ func (r *Rabbit) createConsumer(ctx context.Context, numberAttempts, timeWait in
 func (r *Rabbit) getConsEvent() (msgEvent, error) {
 	var event msgEvent
 	var err error
-	var cons *Consumer
 
-	cons, err = r.getConsumer()
+	err = r.checkConsumer()
 	if err != nil {
 		return event, err
 	}
 
-	select {
-	case event = <-cons.GetChannal():
-		return event, err
-	default:
-		err = noEventError{}
-		return event, err
-	}
+	event = r.consumer.GetMessage()
+	return event, err
 }
 
 // метод останавливает активные процессы у Consumer, и удаляет его из структуры Rabbit.
@@ -240,22 +234,24 @@ func (r *Rabbit) deleteConsumer() {
 //   - waitingErrTime: время ожидания, если потребитель не работает или не существует (в секундах)
 func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime, waitingErrTime int) {
 	defer log.Warning("sendingMessages has finished its work")
+	var err error
+	var event msgEvent
 	log.Info("start sendingMessages")
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			if event, err := r.getConsEvent(); err != nil {
+			if event, err = r.getConsEvent(); err != nil {
 				switch {
 				case errors.Is(err, noEventError{}):
-					time.Sleep(time.Duration(waitingTime) * time.Second)
+					time.Sleep(time.Duration(waitingTime) * time.Millisecond)
 				default:
 					time.Sleep(time.Duration(waitingErrTime) * time.Second)
 				}
 			} else {
 				r.outgoingCh <- event
-				_, err := r.getResponse(event.reverceCh, r.timeWaitBD)
+				_, err = r.getResponse(event.reverceCh, r.timeWaitBD)
 				if err != nil {
 					r.RabbitShutdown(err)
 					return
