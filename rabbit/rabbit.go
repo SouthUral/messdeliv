@@ -318,6 +318,19 @@ func (r *Rabbit) RabbitShutdown(err error) {
 	log.Warning("rabbit has finished its work")
 }
 
+func (r *Rabbit) deleteConn() {
+	if r.rabbitConn != nil {
+		r.rabbitConn.Shutdown()
+		r.rabbitConn = nil
+		log.Info("rabbitConn is deleted")
+	}
+}
+
+func (r *Rabbit) restartAll() {
+	r.deleteConsumer()
+	r.deleteConn()
+}
+
 // Функция создания структуры Rabbit
 //   - envs : парметры необходимые для запуска;
 func InitRb(envs envs) *Rabbit {
@@ -347,6 +360,18 @@ func (r *Rabbit) StartRb(numberAttemptsReonnect, numberAttemptsCreateConsumer, t
 	go r.processConnRb(ctx, numberAttemptsReonnect, timeWaitReconnect)
 	go r.controlConsumers(ctx, numberAttemptsCreateConsumer, timeWaitCheckConsumer, timeWaitCreate)
 	go r.sendingMessages(ctx, waitingTimeMess, waitingErrTime)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				time.Sleep(1 * time.Minute)
+				r.restartAll()
+			}
+		}
+	}()
 
 	return ctx
 }
