@@ -249,7 +249,7 @@ func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime, waitingErrTim
 			if event, err := r.getConsEvent(); err != nil {
 				switch {
 				case errors.Is(err, noEventError{}):
-					time.Sleep(time.Duration(waitingTime) * time.Nanosecond)
+					time.Sleep(time.Duration(waitingTime) * time.Second)
 				default:
 					time.Sleep(time.Duration(waitingErrTime) * time.Second)
 				}
