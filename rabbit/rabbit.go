@@ -26,7 +26,7 @@ func (r *Rabbit) GetChan() chan interface{} {
 	return r.outgoingCh
 }
 
-// возвращает ссылку на Consumer или ошибку
+// метод возвращает ссылку на Consumer или ошибку
 func (r *Rabbit) getConsumer() (*Consumer, error) {
 	return r.consumer, r.checkConsumer()
 }
@@ -50,12 +50,12 @@ func (r *Rabbit) checkConsumer() error {
 	return err
 }
 
-// возвращает ссылку на RabbitConn или ошибку
+// метод возвращает ссылку на RabbitConn или ошибку
 func (r *Rabbit) getRabbitConn() (*RabbitConn, error) {
 	return r.rabbitConn, r.checkRabbitConn()
 }
 
-// Проверяет определен и активен ли RabbitConn
+// проверяет определен и активен ли RabbitConn
 func (r *Rabbit) checkRabbitConn() error {
 	var err error
 
@@ -89,9 +89,10 @@ func (r *Rabbit) initRabbitConn(numberAttempts, timeSleep int) error {
 }
 
 // Процесс мониторинга и переподключения коннекта RabbitMQ.
-// ctx: общий контекст Rabbit;
-// numberAttempts: количество попыток переподключения;
-// timeSleep: время ожидания между проверками подключения.
+//
+//   - ctx: общий контекст Rabbit;
+//   - numberAttempts: количество попыток переподключения;
+//   - timeSleep: время ожидания между проверками подключения.
 func (r *Rabbit) processConnRb(ctx context.Context, numberAttempts, timeSleep int) {
 	defer log.Warning("processConnRb has finished its work")
 	log.Info("start processConnRb")
@@ -121,12 +122,12 @@ func (r *Rabbit) processConnRb(ctx context.Context, numberAttempts, timeSleep in
 	}
 }
 
-// Процесс:
-// Принимает общий для всех горутин rabbit контекст.
+// Процесс принимает общий для всех горутин rabbit контекст.
+//
 // Контролирует состояние Consumer, пересоздает его, если старый перестал работать.
-// ctx: общий контекст Rabbit;
-// numberAttempts: количество попыток создания Consumer;
-// timeWait: интервал между проверками, передается внутрь функции CreateConsumer.
+//   - ctx: общий контекст Rabbit;
+//   - numberAttempts: количество попыток создания Consumer;
+//   - timeWait: интервал между проверками, передается внутрь функции CreateConsumer.
 func (r *Rabbit) controlConsumers(ctx context.Context, numberAttempts, timeWait int) {
 	defer log.Warning("ControlConsumers has finished its work")
 	log.Info("start ControlConsumers")
@@ -162,13 +163,13 @@ func (r *Rabbit) controlConsumers(ctx context.Context, numberAttempts, timeWait 
 
 }
 
-// Метод:
-// создает Consumer.
+// метод создает Consumer.
+//
 // Делает numberAttempts количество попыток с интервалом timeWait.
-// Если все попытки были неудачными то вернет false
-// ctx: общий контекст Rabbit;
-// numberAttempts: количество попыток создания Consumer;
-// timeWait: интервал между попытками.
+// Если все попытки были неудачными то вернет false.
+//   - ctx: общий контекст Rabbit;
+//   - numberAttempts: количество попыток создания Consumer;
+//   - timeWait: интервал между попытками.
 func (r *Rabbit) createConsumer(ctx context.Context, numberAttempts, timeWait int) error {
 	var numbeRestarts int
 	var err error
@@ -221,8 +222,8 @@ func (r *Rabbit) getConsEvent() (msgEvent, error) {
 	}
 }
 
-// метод останавливает активные процессы у Consumer, и удаляет его из структуры Rabbit \\
-// после срабатывания метода, указатель на Consumer будет равен nil
+// метод останавливает активные процессы у Consumer, и удаляет его из структуры Rabbit.
+// После срабатывания метода, указатель на Consumer будет равен nil.
 func (r *Rabbit) deleteConsumer() {
 	if r.consumer != nil {
 		r.consumer.ConsumerShutdown()
@@ -231,11 +232,11 @@ func (r *Rabbit) deleteConsumer() {
 	}
 }
 
-// Процесс:
-// получает события от Consumer и отправляет на сохранение в БД.
-// ctx: общий контекст Rabbit;
-// waitingTime: время ожидания между обращениями к потребителю (в миллисекундах)
-// waitingErrTime: время ожидания, если потребитель не работает или не существует (в секундах)
+// Процесс получает события от Consumer и отправляет на сохранение в БД.
+//
+//   - ctx: общий контекст Rabbit;
+//   - waitingTime: время ожидания между обращениями к потребителю (в миллисекундах)
+//   - waitingErrTime: время ожидания, если потребитель не работает или не существует (в секундах)
 func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime, waitingErrTime int) {
 	defer log.Warning("sendingMessages has finished its work")
 	log.Info("start sendingMessages")
@@ -283,17 +284,14 @@ func (r *Rabbit) getStreamOffset() (int, error) {
 		return offset, err
 	}
 
-	// if answer.GetOffset() > 0 {
-	// 	offset = answer.GetOffset() + 1
-	// }
 	offset = answer.GetOffset()
 
 	return offset, err
 }
 
 // Метод получения ответа от БД на отправленный запрос.
-// ch: канал получения ответа от БД;
-// timeWait: время ожидания ответа от БД в секундах, рекомендуемый параметр 5-30 секунд
+//   - ch: канал получения ответа от БД;
+//   - timeWait: время ожидания ответа от БД в секундах, рекомендуемый параметр 5-30 секунд
 func (r *Rabbit) getResponse(ch chan interface{}, timeWait int) (answerEvent, error) {
 	var err error
 	var answer answerEvent
@@ -324,7 +322,7 @@ func (r *Rabbit) RabbitShutdown(err error) {
 }
 
 // Функция создания структуры Rabbit
-// envs: парметры необходимые для запуска;
+//   - envs : парметры необходимые для запуска;
 func InitRb(envs envs) *Rabbit {
 	rb := &Rabbit{
 		url:        envs.GetUrl(),
@@ -335,14 +333,14 @@ func InitRb(envs envs) *Rabbit {
 	return rb
 }
 
-// метод стартует основные процессы Rabbit//
-// numberAttemptsReonnect: количество попыток реконнекта к RabbitMQ;
-// numberAttemptsCreateConsumer: количество попыток создать потребителя;
-// timeWaitReconnect: время ожидания между реконнектами к RabbitMQ (секунды);
-// timeWaitCheckConsumer: время ожидания между проверками состояния потребителя (секунды);
-// waitingTimeMess: ожидание между проверками сообщения из очереди RabbitMQ (миллисекунды);
-// waitingErrTime: ожидание сообщения из очереди в случае возникновения ошибки (секунды);
-// timeWaitBD: время ожидания ответа от БД, рекомендуется поставить 5-30 секунд (секунды);
+// метод стартует основные процессы Rabbit.
+//   - numberAttemptsReonnect : количество попыток реконнекта к RabbitMQ;
+//   - numberAttemptsCreateConsumer : количество попыток создать потребителя;
+//   - timeWaitReconnect : время ожидания между реконнектами к RabbitMQ (секунды);
+//   - timeWaitCheckConsumer : время ожидания между проверками состояния потребителя (секунды);
+//   - waitingTimeMess : ожидание между проверками сообщения из очереди RabbitMQ (миллисекунды);
+//   - waitingErrTime : ожидание сообщения из очереди в случае возникновения ошибки (секунды);
+//   - timeWaitBD : время ожидания ответа от БД, рекомендуется поставить 5-30 секунд (секунды);
 func (r *Rabbit) StartRb(numberAttemptsReonnect, numberAttemptsCreateConsumer, timeWaitReconnect, timeWaitCheckConsumer, waitingTimeMess, waitingErrTime, timeWaitBD int) context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel

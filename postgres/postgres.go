@@ -24,8 +24,9 @@ type Postgres struct {
 	cancel             func() // функция закрытия контекста
 }
 
-// Метод получает сообщения и запускает горутину генерации запроса к БД requestMaker
-// ctx: общий контекст для postgres;
+// Метод получает сообщения и запускает горутину генерации запроса к БД requestMaker.
+//
+//   - ctx: общий контекст для postgres;
 func (p *Postgres) eventRecipient(ctx context.Context) {
 	defer log.Warning("Postgres: eventRecipient has finished its work")
 	for {
@@ -47,8 +48,9 @@ func (p *Postgres) eventRecipient(ctx context.Context) {
 }
 
 // Метод производит запрос в БД, если запрос провалился из-за ошибки подключения, то он будет повторяться.
-// event: интерфейс полученного сообщения;
-// waitingTime: время ожидания между попытками (в миллисекундах)
+//
+//   - event: интерфейс полученного сообщения;
+//   - waitingTime: время ожидания между попытками (в миллисекундах)
 func (p *Postgres) requestMaker(ctx context.Context, event msgEvent, waitingTime int) {
 	defer log.Debug("requestMaker has finished its work")
 	var err error
@@ -147,9 +149,13 @@ func (pg *Postgres) GetOffset() (int, error) {
 	return offset_msg, err
 }
 
-// процесс контроля за подключением к БД.
-// Параметры: количество попыток подключения, время ожидания между проверками состояния
+/*
+процесс контроля за подключением к БД.
+
+Параметры: количество попыток подключения, время ожидания между проверками состояния
+*/
 func (p *Postgres) processConnDB(ctx context.Context, numberAttempts, timeSleep int) {
+	// var b
 
 	defer log.Warning("processConnDB has finished its work")
 	for {
@@ -171,7 +177,6 @@ func (p *Postgres) processConnDB(ctx context.Context, numberAttempts, timeSleep 
 			}
 		}
 	}
-
 }
 
 // цикл переподключения
@@ -265,10 +270,11 @@ func (p *Postgres) PostgresShutdown(err error) {
 }
 
 // инициализирует Postgres{}, запускает чтение ENV и подключение к БД.
-// waitingTime: время ожидания между попытками запроса к БД в миллисекундах;
-// numberAttemptsBDrequest: количество попыток запроса к БД (5-20);
-// numberAttemptsConnect: количество попыток переподключения к БД (10-30);
-// waitingTimeConn: время ожидания между попытками переподключения к БД в секундах (1-10).
+//
+//   - waitingTime: время ожидания между попытками запроса к БД в миллисекундах;
+//   - numberAttemptsBDrequest: количество попыток запроса к БД (5-20);
+//   - numberAttemptsConnect: количество попыток переподключения к БД (10-30);
+//   - waitingTimeConn: время ожидания между попытками переподключения к БД в секундах (1-10).
 func InitPg(envs envs, // параметры для запуска
 	incomingCh chan interface{},
 	waitingTime,

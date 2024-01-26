@@ -76,7 +76,6 @@ func (r *RabbitConn) UpdataStatusConn() {
 	r.mx.Lock()
 	if r.Connector != nil {
 		isClosed = r.Connector.IsClosed()
-		// log.Infof("RabbitConn %v", isClosed)
 	}
 	r.mx.Unlock()
 
@@ -105,7 +104,7 @@ func (r *RabbitConn) UpdataStatusCh() {
 }
 
 // метод обновляет статусы коннекта и канала.
-// Возвращает ошибку если есть проблемы
+// Возвращает ошибку если есть проблемы.
 func (r *RabbitConn) CheckStatusReady() error {
 	r.UpdataStatusConn()
 	r.UpdataStatusCh()
