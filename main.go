@@ -34,7 +34,7 @@ func init() {
 func main() {
 	defer log.Info("messDeliv finished the job")
 	pgEnvs, rbEnvs := env.LoadEnvs()
-	rbMain := rb.InitRb(*rbEnvs)
+	rbMain := rb.InitRabbit(rbEnvs.GetUrl(), rbEnvs.GetNameQueue(), "test_2", 20)
 	pgMain, ctxPg := pg.InitPg(
 		*pgEnvs,
 		rbMain.GetChan(),
@@ -43,22 +43,15 @@ func main() {
 		30,   // количество попыток переподключения к БД
 		5,    // время между попытками переподключения (в секундах)
 	)
-	ctxRb := rbMain.StartRb(
-		20, // количество попыток реконнекта к RabbitMQ
-		20, // количество попыток создать потребителя
-		5,  // время ожидания между реконнектами к RabbitMQ (секунды)
-		1,  // время ожидания между проверками состояния потребителя (секунды)
-		2,  // ожидание между проверками сообщения из очереди RabbitMQ (Nanosecond)
-		5,  // ожидание сообщения из очереди в случае возникновения ошибки (секунды)
-		30, // время ожидания ответа от БД, рекомендуется поставить 5-30 секунд (секунды)
-		5,  // время ожидания между попытками создания Consumer (секунды)
-	)
+	ctxRb := rbMain.StartRb()
 	for {
 		select {
 		case <-ctxPg.Done():
+			log.Info("pg done")
 			rbMain.RabbitShutdown(pg.PostgresShutdownError{})
 			return
 		case <-ctxRb.Done():
+			log.Info("rabbit done")
 			pgMain.PostgresShutdown(rb.RabbitShutdownError{})
 			return
 		default:

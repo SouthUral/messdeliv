@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -14,257 +14,331 @@ type Rabbit struct {
 	url          string
 	nameQueue    string
 	nameConsumer string
-	rabbitConn   *RabbitConn
-	consumer     *Consumer
-	mx           sync.RWMutex
+	Connector    *amqp.Connection //
+	Channel      *amqp.Channel
+	Consumer     *Consumer
 	timeWaitBD   int // время ожидания ответа от БД в секундах
 	outgoingCh   chan interface{}
 	cancel       func()
+}
+
+func InitRabbit(url, nameQueue, nameConsumer string, timeWaitBD int) *Rabbit {
+	res := &Rabbit{
+		url:          url,
+		nameQueue:    nameQueue,
+		nameConsumer: nameConsumer,
+		timeWaitBD:   timeWaitBD,
+		outgoingCh:   make(chan interface{}),
+	}
+
+	return res
 }
 
 func (r *Rabbit) GetChan() chan interface{} {
 	return r.outgoingCh
 }
 
-// метод возвращает ссылку на Consumer или ошибку
-func (r *Rabbit) getConsumer() (*Consumer, error) {
-	return r.consumer, r.checkConsumer()
+func (r *Rabbit) RabbitShutdown(err error) {
+	log.Infof("раббит завершил работу по причине: %s", err)
+	r.cancel()
 }
 
-// метод проверят определен и активен ли Consumer
-func (r *Rabbit) checkConsumer() error {
+func (r *Rabbit) StartRb() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	r.cancel = cancel
+
+	go r.processRabbit(ctx)
+
+	log.Info("processRabbit start")
+	return ctx
+}
+
+func (r *Rabbit) processRabbit(ctx context.Context) {
+	defer log.Info("processRabbit is closed")
+	defer r.closeConn()
+	defer r.closeChan()
+	defer r.dellConsumer()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// закрыть консюмера
+			// закрыть канал
+			// закрыть коннект
+			return
+		default:
+			if err := r.checkChan(); err != nil {
+				err = r.attemptCreateConn(ctx, 20, 1)
+				if err != nil {
+					r.RabbitShutdown(err)
+					return
+				}
+			}
+
+			if err := r.checkChan(); err != nil {
+				err = r.initChan()
+				if err != nil {
+					return
+				}
+			}
+			log.Info("туц")
+			err := r.checkConsumer()
+			if err != nil {
+				log.Info("туц_2")
+				if errors.Is(err, consumerNotDedineError{}) {
+					log.Info("туц_3")
+					r.initConsumer()
+					continue
+				}
+
+				if errors.Is(err, consumerActiveError{}) {
+					log.Info("туц_4")
+					r.dellConsumer()
+					err := r.recreateChan()
+					if err != nil {
+						continue
+					}
+					r.initConsumer()
+					continue
+				}
+			}
+
+			msg := r.Consumer.GetMessage()
+			r.outgoingCh <- msg
+			_, err = r.getResponse(msg.GetReverceCh(), r.timeWaitBD)
+			if err != nil {
+				return
+			}
+			msg.signal()
+		}
+	}
+}
+
+// метод производит попытки переподключения к RabbitMQ
+func (r *Rabbit) attemptCreateConn(ctx context.Context, attempt, timeWait int) error {
 	var err error
-
-	// если consumer не определен
-	if r.consumer == nil {
-		err = fmt.Errorf("%w", consumerNotDedineError{})
-		return err
+	for i := 0; i < attempt; i++ {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			err = r.initConn()
+			if err == nil {
+				return nil
+			}
+			log.Error(err)
+			time.Sleep(time.Duration(timeWait) * time.Second)
+		}
 	}
-
-	// если consumer не активен
-	if !r.consumer.GetStatus() {
-		err = consumerActiveError{}
-		return err
-	}
-
 	return err
 }
 
-// метод возвращает ссылку на RabbitConn или ошибку
-func (r *Rabbit) getRabbitConn() (*RabbitConn, error) {
-	return r.rabbitConn, r.checkRabbitConn()
-}
-
-// проверяет определен и активен ли RabbitConn
-func (r *Rabbit) checkRabbitConn() error {
-	var err error
-
-	if r.rabbitConn == nil {
-		err = rabbitConnNotDefineError{}
+// Создание коннекта к RabbitMQ
+func (r *Rabbit) initConn() error {
+	conn, err := amqp.Dial(r.url)
+	if err != nil {
+		err = fmt.Errorf("%w: %w", connRabbitError{}, err)
 		return err
 	}
 
-	if err = r.rabbitConn.CheckStatusReady(); err != nil {
+	r.Connector = conn
+	log.Info("connect RabbitMQ created")
+	return nil
+}
+
+// проверка коннекта
+func (r *Rabbit) checkConn() error {
+	if r.Connector == nil {
+		return rabbitConnNotDefineError{}
+	}
+
+	if r.Connector.IsClosed() {
+		return connRabbitNotReadyError{}
+	}
+
+	return nil
+}
+
+// закрытие коннекта
+func (r *Rabbit) closeConn() error {
+	err := r.checkConn()
+	if err == nil {
+		err = r.Connector.Close()
+		if err != nil {
+			return err
+		}
+		r.Connector = nil
+		log.Info("connect RabbitMQ is closed")
+	}
+
+	if errors.Is(err, connRabbitNotReadyError{}) {
+		r.Connector = nil
+		log.Warning("connect RabbitMQ is already closed")
+	}
+
+	return nil
+}
+
+// Создание канала RabbitMQ
+func (r *Rabbit) initChan() error {
+	chanRabbit, err := r.Connector.Channel()
+	if err != nil {
+		err = fmt.Errorf("%w: %w", createChanRabbitError{}, err)
 		return err
 	}
 
-	return err
+	r.Channel = chanRabbit
+	r.Channel.Qos(1, 0, false)
+	log.Info("channel RabbitMQ created")
+	return nil
 }
 
-func (r *Rabbit) initRabbitConn(numberAttempts, timeSleep int) error {
-	var err error
-	var rc *RabbitConn
+// проверка канала RabbitMQ
+func (r *Rabbit) checkChan() error {
+	if r.Channel == nil {
+		return chanRabbitNotDefineError{}
+	}
 
-	rc, err = InitRabbitConn(r.url, numberAttempts, timeSleep)
+	if r.Channel.IsClosed() {
+		return chanRabbitIsClosedError{}
+	}
+
+	return nil
+}
+
+func (r *Rabbit) closeChan() error {
+	err := r.checkChan()
+	if err == nil {
+		err = r.Channel.Close()
+		if err != nil {
+			return err
+		}
+		r.Channel = nil
+		log.Info("chan RabbitMQ is closed")
+	}
+
+	if errors.Is(err, chanRabbitIsClosedError{}) {
+		log.Warning("the chan RabbitMQ is already closed")
+		r.Channel = nil
+	}
+
+	return nil
+}
+
+func (r *Rabbit) recreateChan() error {
+	r.closeChan()
+	err := r.initChan()
+	if err != nil {
+		log.Error("Не удалось пересоздать канал")
+		return err
+	}
+	return nil
+}
+
+func (r *Rabbit) initConsumer() error {
+	args, err := r.defineOffset()
+	if err != nil {
+		err = fmt.Errorf("%w: %w", consumCreateError{}, err)
+		return err
+	}
+	log.Info("оффсет получен")
+	ch, err := r.createConsumer(args)
 	if err != nil {
 		log.Error(err)
 		return err
 	}
-
-	r.mx.Lock()
-	r.rabbitConn = rc
-	r.mx.Unlock()
-
-	return err
+	log.Info("канал консюмера создан")
+	cons := InitConsumer(ch)
+	r.Consumer = cons
+	log.Info("consumer RebbitMQ created")
+	return nil
 }
 
-// Процесс мониторинга и переподключения коннекта RabbitMQ.
-//
-//   - ctx: общий контекст Rabbit;
-//   - numberAttempts: количество попыток переподключения;
-//   - timeSleep: время ожидания между проверками подключения.
-func (r *Rabbit) processConnRb(ctx context.Context, numberAttempts, timeSleep int) {
-	defer log.Warning("processConnRb has finished its work")
-	log.Info("start processConnRb")
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			err := r.checkRabbitConn()
-			switch {
-			case errors.Is(err, rabbitConnNotDefineError{}):
-				err := r.initRabbitConn(numberAttempts, timeSleep)
-				if err != nil {
-					r.RabbitShutdown(err)
-					return
-				}
-			case errors.Is(err, connRabbitNotReadyError{}):
-				err := r.rabbitConn.CreateConnChan()
-				if err != nil {
-					log.Error("connection to RabbitMQ could not be restored")
-					r.RabbitShutdown(err)
-					return
-				}
-			}
-			time.Sleep(time.Duration(timeSleep) * time.Second)
-		}
-	}
-}
-
-// Процесс принимает общий для всех горутин rabbit контекст.
-//
-// Контролирует состояние Consumer, пересоздает его, если старый перестал работать.
-//   - ctx: общий контекст Rabbit;
-//   - numberAttempts: количество попыток создания Consumer;
-//   - timeWaitCheck: интервал между проверками, передается внутрь функции CreateConsumer.
-func (r *Rabbit) controlConsumers(ctx context.Context, numberAttempts, timeWaitCheck, timeWaitCreate int) {
-	defer log.Warning("ControlConsumers has finished its work")
-	log.Info("start ControlConsumers")
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			errConn := r.checkRabbitConn()
-			if errConn != nil {
-				r.deleteConsumer()
-				time.Sleep(time.Duration(timeWaitCheck) * time.Second)
-				continue
-			}
-
-			errCons := r.checkConsumer()
-			switch {
-			case errors.Is(errCons, consumerNotDedineError{}):
-				log.Error(errCons)
-				err := r.createConsumer(ctx, numberAttempts, timeWaitCreate)
-				if err != nil {
-					log.Error("the number of attempts to create a consumer has ended")
-					r.RabbitShutdown(err)
-					return
-				}
-			case errors.Is(errCons, consumerActiveError{}):
-				r.deleteConsumer()
-				continue
-			}
-
-			time.Sleep(time.Duration(timeWaitCheck) * time.Second)
-		}
+func (r *Rabbit) checkConsumer() error {
+	if r.Consumer == nil {
+		return consumerNotDedineError{}
 	}
 
-}
-
-// метод создает Consumer.
-//
-// Делает numberAttempts количество попыток с интервалом timeWait.
-// Если все попытки были неудачными то вернет false.
-//   - ctx: общий контекст Rabbit;
-//   - numberAttempts: количество попыток создания Consumer;
-//   - timeWait: интервал между попытками.
-func (r *Rabbit) createConsumer(ctx context.Context, numberAttempts, timeWait int) error {
-	var numbeRestarts int
-	var err error
-	var cons *Consumer
-	var offset int
-
-	for numbeRestarts < numberAttempts {
-		select {
-		case <-ctx.Done():
-			return err
-		default:
-			offset, err = r.getStreamOffset()
-			if err != nil {
-				return err
-			}
-			cons, err = r.rabbitConn.NewConsumer(offset, r.nameQueue, r.nameConsumer)
-			if err != nil {
-				numbeRestarts++
-				time.Sleep(time.Duration(timeWait) * time.Second)
-				continue
-			} else {
-				r.mx.Lock()
-				r.consumer = cons
-				r.mx.Unlock()
-				return err
-			}
-		}
+	if !r.Consumer.GetStatus() {
+		return consumerActiveError{}
 	}
 
-	return err
+	return nil
 }
 
-// метод проверяет, есть ли активный Consumer, если есть, то возвращает сообщение от него
-func (r *Rabbit) getConsEvent() (msgEvent, error) {
-	var event msgEvent
-	var err error
+func (r *Rabbit) dellConsumer() {
+	if r.Consumer != nil {
+		r.Consumer.ConsumerShutdown()
+		r.Consumer = nil
+		log.Info("consumer is dell")
+	}
+	log.Warning("consumer is already dell")
+}
 
-	err = r.checkConsumer()
+// Создание консюмера
+func (r *Rabbit) createConsumer(args amqp.Table) (<-chan amqp.Delivery, error) {
+	ch, err := r.Channel.Consume(
+		r.nameQueue,    // queue
+		r.nameConsumer, // consumer
+		false,          // auto-ack
+		false,          // exclusive
+		false,          // no-local
+		false,          // no-wait
+		args,           // args
+	)
 	if err != nil {
-		return event, err
+		err = fmt.Errorf("%w: %w", consumCreateError{}, err)
 	}
-
-	event = r.consumer.GetMessage()
-	return event, err
+	return ch, err
 }
 
-// метод останавливает активные процессы у Consumer, и удаляет его из структуры Rabbit.
-// После срабатывания метода, указатель на Consumer будет равен nil.
-func (r *Rabbit) deleteConsumer() {
-	if r.consumer != nil {
-		r.consumer.ConsumerShutdown()
-		r.consumer = nil
-		log.Info("consumer is deleted")
-	}
-}
+// функция определения offset
+func (r *Rabbit) defineOffset() (amqp.Table, error) {
+	log.Info("defineOffset")
 
-// Процесс получает события от Consumer и отправляет на сохранение в БД.
-//
-//   - ctx: общий контекст Rabbit;
-//   - waitingTime: время ожидания между обращениями к потребителю (в миллисекундах)
-//   - waitingErrTime: время ожидания, если потребитель не работает или не существует (в секундах)
-func (r *Rabbit) sendingMessages(ctx context.Context, waitingTime, waitingErrTime int) {
-	defer log.Warning("sendingMessages has finished its work")
-	var err error
-	var event msgEvent
-	log.Info("start sendingMessages")
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			if event, err = r.getConsEvent(); err != nil {
-				switch {
-				case errors.Is(err, noEventError{}):
-					time.Sleep(time.Duration(waitingTime) * time.Millisecond)
-				default:
-					time.Sleep(time.Duration(waitingErrTime) * time.Second)
-				}
-			} else {
-				r.outgoingCh <- event
-				_, err = r.getResponse(event.reverceCh, r.timeWaitBD)
-				if err != nil {
-					r.RabbitShutdown(err)
-					return
-				}
-				// отправка сигнала, для разблокировки Consumer
-				event.signal()
-			}
-		}
+	args := amqp.Table{"x-stream-offset": "last"}
+
+	lastOffsetDB, err := r.getStreamOffset()
+	if err != nil {
+		err = fmt.Errorf("%w: %w", createOffsetError{}, err)
+		return args, err
 	}
+
+	if lastOffsetDB == 0 {
+		// если streamOffset == 0, значит в БД нет записей, или offset затерт
+		return args, nil
+	}
+
+	ch, err := r.createConsumer(args)
+	if err != nil {
+		err = fmt.Errorf("%w: %w", createOffsetError{}, err)
+		return args, err
+	}
+
+	cons := InitConsumer(ch)
+	lastOffsetRabbit := cons.GetMessage().GetOffset()
+	cons.ConsumerShutdown()
+
+	err = r.recreateChan()
+	if err != nil {
+		return args, err
+	}
+
+	if lastOffsetDB > int(lastOffsetRabbit) {
+		// если offset из БД больше, значит очередь в Rabbit была сброшена и нужно начать читать сообщения с начала очереди
+		args = amqp.Table{"x-stream-offset": "first"}
+		return args, nil
+	}
+
+	// если offset из Rabbit больше, значит очередь в Rabbit в порядке, и можно читать сообщения с offset+1 БД
+	args = amqp.Table{"x-stream-offset": lastOffsetDB + 1}
+	return args, nil
 }
 
 // метод для получения offset из БД.
 func (r *Rabbit) getStreamOffset() (int, error) {
+	log.Info("getStreamOffset")
 	var offset int
 
 	revCh := make(chan interface{})
@@ -307,42 +381,6 @@ func (r *Rabbit) getResponse(ch chan interface{}, timeWait int) (answerEvent, er
 	return answer, err
 }
 
-// прекращение всех процессов Rabbit
-func (r *Rabbit) RabbitShutdown(err error) {
-	log.Errorf("Rabbit shutdown due to: %v", err)
-	r.cancel()
-	r.deleteConsumer()
-	if r.rabbitConn != nil {
-		r.rabbitConn.Shutdown()
-	}
-	log.Warning("rabbit has finished its work")
-}
-
-func (r *Rabbit) deleteConn() {
-	if r.rabbitConn != nil {
-		r.rabbitConn.Shutdown()
-		r.rabbitConn = nil
-		log.Info("rabbitConn is deleted")
-	}
-}
-
-func (r *Rabbit) restartAll() {
-	r.deleteConsumer()
-	r.deleteConn()
-}
-
-// Функция создания структуры Rabbit
-//   - envs : парметры необходимые для запуска;
-func InitRb(envs envs) *Rabbit {
-	rb := &Rabbit{
-		url:        envs.GetUrl(),
-		nameQueue:  envs.GetNameQueue(),
-		outgoingCh: make(chan interface{}, 5),
-	}
-
-	return rb
-}
-
 // метод стартует основные процессы Rabbit.
 //   - numberAttemptsReonnect : количество попыток реконнекта к RabbitMQ;
 //   - numberAttemptsCreateConsumer : количество попыток создать потребителя;
@@ -352,26 +390,26 @@ func InitRb(envs envs) *Rabbit {
 //   - waitingErrTime : ожидание сообщения из очереди в случае возникновения ошибки (секунды);
 //   - timeWaitBD : время ожидания ответа от БД, рекомендуется поставить 5-30 секунд (секунды);
 //   - timeWaitCreate : время ожидания между попытками создания Consumer (секунды);
-func (r *Rabbit) StartRb(numberAttemptsReonnect, numberAttemptsCreateConsumer, timeWaitReconnect, timeWaitCheckConsumer, waitingTimeMess, waitingErrTime, timeWaitBD, timeWaitCreate int) context.Context {
-	ctx, cancel := context.WithCancel(context.Background())
-	r.cancel = cancel
-	r.timeWaitBD = timeWaitBD
+// func (r *Rabbit) StartRb(numberAttemptsReonnect, numberAttemptsCreateConsumer, timeWaitReconnect, timeWaitCheckConsumer, waitingTimeMess, waitingErrTime, timeWaitBD, timeWaitCreate int) context.Context {
+// 	ctx, cancel := context.WithCancel(context.Background())
+// 	r.cancel = cancel
+// 	r.timeWaitBD = timeWaitBD
 
-	go r.processConnRb(ctx, numberAttemptsReonnect, timeWaitReconnect)
-	go r.controlConsumers(ctx, numberAttemptsCreateConsumer, timeWaitCheckConsumer, timeWaitCreate)
-	go r.sendingMessages(ctx, waitingTimeMess, waitingErrTime)
+// 	go r.processConnRb(ctx, numberAttemptsReonnect, timeWaitReconnect)
+// 	go r.controlConsumers(ctx, numberAttemptsCreateConsumer, timeWaitCheckConsumer, timeWaitCreate)
+// 	go r.sendingMessages(ctx, waitingTimeMess, waitingErrTime)
 
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				time.Sleep(1 * time.Minute)
-				r.restartAll()
-			}
-		}
-	}()
+// 	go func() {
+// 		for {
+// 			select {
+// 			case <-ctx.Done():
+// 				return
+// 			default:
+// 				time.Sleep(1 * time.Minute)
+// 				r.restartAll()
+// 			}
+// 		}
+// 	}()
 
-	return ctx
-}
+// 	return ctx
+// }

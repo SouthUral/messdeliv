@@ -102,7 +102,6 @@ func InitConsumer(ch <-chan amqp.Delivery) *Consumer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cons := &Consumer{
-		// offset:   streamOffset,
 		chOutput: make(chan msgEvent),
 		cansel:   cancel,
 		chRb:     ch,
@@ -115,15 +114,15 @@ func InitConsumer(ch <-chan amqp.Delivery) *Consumer {
 	return cons
 }
 
-// метод получения аргументов для запуска консюмера
-func getArgs(offset int) amqp.Table {
-	var args amqp.Table
+// // метод получения аргументов для запуска консюмера
+// func getArgs(offset int) amqp.Table {
+// 	var args amqp.Table
 
-	if offset > 0 {
-		args = amqp.Table{"x-stream-offset": offset}
-	} else {
-		args = amqp.Table{"x-stream-offset": "last"}
-	}
+// 	if offset > 0 {
+// 		args = amqp.Table{"x-stream-offset": offset}
+// 	} else {
+// 		args = amqp.Table{"x-stream-offset": "last"}
+// 	}
 
-	return args
-}
+// 	return args
+// }

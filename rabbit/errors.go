@@ -106,6 +106,14 @@ func (e createChanRabbitError) Error() string {
 	return "error creating the RabbitMQ channel"
 }
 
+// не удалось создать оффсет
+type createOffsetError struct {
+}
+
+func (e createOffsetError) Error() string {
+	return "error create offset"
+}
+
 // не получилось получить offset из БД
 type gettingOffsetError struct {
 }
