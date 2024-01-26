@@ -4,6 +4,8 @@ import (
 	"os"
 	"time"
 
+	_ "net/http/pprof"
+
 	"github.com/joho/godotenv"
 
 	env "messdeliv/env"
@@ -59,6 +61,7 @@ func main() {
 			pgMain.PostgresShutdown(rb.RabbitShutdownError{})
 			return
 		default:
+			// http.ListenAndServe(":9090", nil)
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
