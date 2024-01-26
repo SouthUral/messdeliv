@@ -328,7 +328,7 @@ func (r *Rabbit) deleteConn() {
 
 func (r *Rabbit) restartAll() {
 	r.deleteConsumer()
-	r.deleteConn()
+	// r.deleteConn()
 }
 
 // Функция создания структуры Rabbit
