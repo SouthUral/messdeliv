@@ -33,15 +33,16 @@ func init() {
 
 func main() {
 	defer log.Info("messDeliv finished the job")
+	defer time.Sleep(15 * time.Second)
 	pgEnvs, rbEnvs := env.LoadEnvs()
-	rbMain := rb.InitRabbit(rbEnvs.GetUrl(), rbEnvs.GetNameQueue(), "test_2", 20)
+	rbMain := rb.InitRabbit(rbEnvs.GetUrl(), rbEnvs.GetNameQueue(), "test_2", 30)
 	pgMain, ctxPg := pg.InitPg(
 		*pgEnvs,
 		rbMain.GetChan(),
 		1000, // время ожидания между попытками запроса к БД (в миллисекундах)
 		20,   // количество попыток запроса к БД
 		30,   // количество попыток переподключения к БД
-		5,    // время между попытками переподключения (в секундах)
+		3,    // время между попытками переподключения (в секундах)
 	)
 	ctxRb := rbMain.StartRb()
 	for {

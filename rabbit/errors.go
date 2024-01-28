@@ -1,13 +1,5 @@
 package rabbit
 
-// ошибка, генерирующаяся при отсутствующем событии от Consumer
-type noEventError struct {
-}
-
-func (e noEventError) Error() string {
-	return "the event was not received from the consumer"
-}
-
 // ошибка создания потребителя
 type consumCreateError struct {
 }
@@ -48,14 +40,6 @@ type rabbitConnNotDefineError struct {
 
 func (e rabbitConnNotDefineError) Error() string {
 	return "rabbitConn is not define"
-}
-
-// Ошибка инициализации RabbitConn
-type initRabbitConnError struct {
-}
-
-func (e initRabbitConnError) Error() string {
-	return "initialization error RabbitConn"
 }
 
 // коннект к RabbitMQ не готов

@@ -14,7 +14,7 @@ type Rabbit struct {
 	url          string
 	nameQueue    string
 	nameConsumer string
-	Connector    *amqp.Connection //
+	Connector    *amqp.Connection
 	Channel      *amqp.Channel
 	Consumer     *Consumer
 	timeWaitBD   int // время ожидания ответа от БД в секундах
@@ -39,7 +39,7 @@ func (r *Rabbit) GetChan() chan interface{} {
 }
 
 func (r *Rabbit) RabbitShutdown(err error) {
-	log.Infof("раббит завершил работу по причине: %s", err)
+	log.Infof("RabbitMQ has shut down for a reason: %s", err)
 	r.cancel()
 }
 
@@ -68,8 +68,8 @@ func (r *Rabbit) processRabbit(ctx context.Context) {
 			// закрыть коннект
 			return
 		default:
-			if err := r.checkChan(); err != nil {
-				err = r.attemptCreateConn(ctx, 20, 1)
+			if err := r.checkConn(); err != nil {
+				err = r.attemptCreateConn(ctx, 20, 2)
 				if err != nil {
 					r.RabbitShutdown(err)
 					return
@@ -79,35 +79,39 @@ func (r *Rabbit) processRabbit(ctx context.Context) {
 			if err := r.checkChan(); err != nil {
 				err = r.initChan()
 				if err != nil {
+					r.RabbitShutdown(err)
 					return
 				}
 			}
-			log.Info("туц")
 			err := r.checkConsumer()
 			if err != nil {
-				log.Info("туц_2")
 				if errors.Is(err, consumerNotDedineError{}) {
-					log.Info("туц_3")
-					r.initConsumer()
+					r.initConsumer(ctx)
 					continue
 				}
 
 				if errors.Is(err, consumerActiveError{}) {
-					log.Info("туц_4")
 					r.dellConsumer()
 					err := r.recreateChan()
 					if err != nil {
+						log.Info("Continue")
 						continue
 					}
-					r.initConsumer()
+					r.initConsumer(ctx)
 					continue
 				}
 			}
 
-			msg := r.Consumer.GetMessage()
-			r.outgoingCh <- msg
-			_, err = r.getResponse(msg.GetReverceCh(), r.timeWaitBD)
+			msg, err := r.Consumer.GetMessage()
 			if err != nil {
+				log.Error(err)
+				continue
+			}
+
+			r.outgoingCh <- msg
+			_, err = r.getResponse(ctx, msg.GetReverceCh(), r.timeWaitBD)
+			if err != nil {
+				r.RabbitShutdown(err)
 				return
 			}
 			msg.signal()
@@ -131,7 +135,7 @@ func (r *Rabbit) attemptCreateConn(ctx context.Context, attempt, timeWait int) e
 			time.Sleep(time.Duration(timeWait) * time.Second)
 		}
 	}
-	return err
+	return fmt.Errorf("%w: %w", connectAttemptsError{}, err)
 }
 
 // Создание коннекта к RabbitMQ
@@ -230,25 +234,26 @@ func (r *Rabbit) recreateChan() error {
 	r.closeChan()
 	err := r.initChan()
 	if err != nil {
-		log.Error("Не удалось пересоздать канал")
+		log.Error("failed to recreate the RabbitMQ channel")
 		return err
 	}
 	return nil
 }
 
-func (r *Rabbit) initConsumer() error {
-	args, err := r.defineOffset()
+func (r *Rabbit) initConsumer(ctx context.Context) error {
+	args, err := r.defineOffset(ctx)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", consumCreateError{}, err)
+		log.Error(err)
 		return err
 	}
-	log.Info("оффсет получен")
+	log.Info("offset received")
 	ch, err := r.createConsumer(args)
 	if err != nil {
 		log.Error(err)
 		return err
 	}
-	log.Info("канал консюмера создан")
+	log.Info("consumer channel has been created")
 	cons := InitConsumer(ch)
 	r.Consumer = cons
 	log.Info("consumer RebbitMQ created")
@@ -294,12 +299,12 @@ func (r *Rabbit) createConsumer(args amqp.Table) (<-chan amqp.Delivery, error) {
 }
 
 // функция определения offset
-func (r *Rabbit) defineOffset() (amqp.Table, error) {
+func (r *Rabbit) defineOffset(ctx context.Context) (amqp.Table, error) {
 	log.Info("defineOffset")
 
 	args := amqp.Table{"x-stream-offset": "last"}
 
-	lastOffsetDB, err := r.getStreamOffset()
+	lastOffsetDB, err := r.getStreamOffset(ctx)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", createOffsetError{}, err)
 		return args, err
@@ -317,7 +322,11 @@ func (r *Rabbit) defineOffset() (amqp.Table, error) {
 	}
 
 	cons := InitConsumer(ch)
-	lastOffsetRabbit := cons.GetMessage().GetOffset()
+	msg, err := cons.GetMessage()
+	if err != nil {
+		return args, err
+	}
+	lastOffsetRabbit := msg.GetOffset()
 	cons.ConsumerShutdown()
 
 	err = r.recreateChan()
@@ -337,7 +346,7 @@ func (r *Rabbit) defineOffset() (amqp.Table, error) {
 }
 
 // метод для получения offset из БД.
-func (r *Rabbit) getStreamOffset() (int, error) {
+func (r *Rabbit) getStreamOffset(ctx context.Context) (int, error) {
 	log.Info("getStreamOffset")
 	var offset int
 
@@ -348,7 +357,7 @@ func (r *Rabbit) getStreamOffset() (int, error) {
 	}
 
 	r.outgoingCh <- event
-	answer, err := r.getResponse(revCh, r.timeWaitBD)
+	answer, err := r.getResponse(ctx, revCh, r.timeWaitBD)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", gettingOffsetError{}, err)
 		log.Error(err)
@@ -363,13 +372,15 @@ func (r *Rabbit) getStreamOffset() (int, error) {
 // Метод получения ответа от БД на отправленный запрос.
 //   - ch: канал получения ответа от БД;
 //   - timeWait: время ожидания ответа от БД в секундах, рекомендуемый параметр 5-30 секунд
-func (r *Rabbit) getResponse(ch chan interface{}, timeWait int) (answerEvent, error) {
+func (r *Rabbit) getResponse(ctx context.Context, ch chan interface{}, timeWait int) (answerEvent, error) {
 	var err error
 	var answer answerEvent
 	var ok bool
 
 	ctxWait, _ := context.WithTimeout(context.Background(), time.Duration(timeWait)*time.Second)
 	select {
+	case <-ctx.Done():
+		err = fmt.Errorf("waiting for a response has been interrupted")
 	case <-ctxWait.Done():
 		err = fmt.Errorf("the waiting time has ended")
 	case msg := <-ch:
@@ -380,36 +391,3 @@ func (r *Rabbit) getResponse(ch chan interface{}, timeWait int) (answerEvent, er
 	}
 	return answer, err
 }
-
-// метод стартует основные процессы Rabbit.
-//   - numberAttemptsReonnect : количество попыток реконнекта к RabbitMQ;
-//   - numberAttemptsCreateConsumer : количество попыток создать потребителя;
-//   - timeWaitReconnect : время ожидания между реконнектами к RabbitMQ (секунды);
-//   - timeWaitCheckConsumer : время ожидания между проверками состояния потребителя (секунды);
-//   - waitingTimeMess : ожидание между проверками сообщения из очереди RabbitMQ (миллисекунды);
-//   - waitingErrTime : ожидание сообщения из очереди в случае возникновения ошибки (секунды);
-//   - timeWaitBD : время ожидания ответа от БД, рекомендуется поставить 5-30 секунд (секунды);
-//   - timeWaitCreate : время ожидания между попытками создания Consumer (секунды);
-// func (r *Rabbit) StartRb(numberAttemptsReonnect, numberAttemptsCreateConsumer, timeWaitReconnect, timeWaitCheckConsumer, waitingTimeMess, waitingErrTime, timeWaitBD, timeWaitCreate int) context.Context {
-// 	ctx, cancel := context.WithCancel(context.Background())
-// 	r.cancel = cancel
-// 	r.timeWaitBD = timeWaitBD
-
-// 	go r.processConnRb(ctx, numberAttemptsReonnect, timeWaitReconnect)
-// 	go r.controlConsumers(ctx, numberAttemptsCreateConsumer, timeWaitCheckConsumer, timeWaitCreate)
-// 	go r.sendingMessages(ctx, waitingTimeMess, waitingErrTime)
-
-// 	go func() {
-// 		for {
-// 			select {
-// 			case <-ctx.Done():
-// 				return
-// 			default:
-// 				time.Sleep(1 * time.Minute)
-// 				r.restartAll()
-// 			}
-// 		}
-// 	}()
-
-// 	return ctx
-// }

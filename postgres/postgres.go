@@ -167,7 +167,7 @@ func (p *Postgres) processConnDB(ctx context.Context, numberAttempts, timeSleep 
 				time.Sleep(time.Duration(timeSleep) * time.Second)
 				p.checkConn()
 			} else {
-				if !p.connection(numberAttempts) {
+				if !p.connection(ctx, numberAttempts, timeSleep) {
 					// все попытки подключения провалены
 					// завершение работы
 					err := endConnectAttemptsError{}
@@ -180,14 +180,19 @@ func (p *Postgres) processConnDB(ctx context.Context, numberAttempts, timeSleep 
 }
 
 // цикл переподключения
-func (pg *Postgres) connection(numberAttempts int) bool {
+func (pg *Postgres) connection(ctx context.Context, numberAttempts, timeSleep int) bool {
 	for i := 0; i < numberAttempts; i++ {
-		if !pg.getIsReadyConn() {
-			pg.connPg()
-		} else {
-			return true
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			if !pg.getIsReadyConn() {
+				pg.connPg()
+			} else {
+				return true
+			}
+			time.Sleep(time.Duration(timeSleep) * time.Second)
 		}
-		time.Sleep(1 * time.Second)
 	}
 	return false
 }

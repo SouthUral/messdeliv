@@ -14,7 +14,6 @@ type Consumer struct {
 	chOutput chan msgEvent
 	mx       sync.RWMutex
 	works    bool
-	offset   int
 	cansel   func() // функция для отмены контекста
 }
 
@@ -86,9 +85,13 @@ func (c *Consumer) WaitingforAnswer(ctxCons, ctxEvent context.Context) error {
 }
 
 // метод возвращает сообщение из канал консюмера
-func (c *Consumer) GetMessage() msgEvent {
-	event := <-c.GetChannal()
-	return event
+func (c *Consumer) GetMessage() (msgEvent, error) {
+	var err error
+	event, ok := <-c.GetChannal()
+	if !ok {
+		err = consumerActiveError{}
+	}
+	return event, err
 }
 
 // Закрывает активные горутины Consumer
@@ -113,16 +116,3 @@ func InitConsumer(ch <-chan amqp.Delivery) *Consumer {
 
 	return cons
 }
-
-// // метод получения аргументов для запуска консюмера
-// func getArgs(offset int) amqp.Table {
-// 	var args amqp.Table
-
-// 	if offset > 0 {
-// 		args = amqp.Table{"x-stream-offset": offset}
-// 	} else {
-// 		args = amqp.Table{"x-stream-offset": "last"}
-// 	}
-
-// 	return args
-// }
